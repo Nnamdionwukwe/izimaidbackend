@@ -1,7 +1,5 @@
 import jwt from "jsonwebtoken";
-import { OAuth2Client } from "google-auth-library";
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
 
@@ -14,27 +12,40 @@ function signToken(user) {
 }
 
 export const googleLogin = async (req, res) => {
-  const { id_token, role = "customer" } = req.body;
+  const { access_token, role = "customer" } = req.body;
 
-  if (!id_token) {
-    return res.status(400).json({ error: "id_token is required" });
+  if (!access_token) {
+    return res.status(400).json({ error: "access_token is required" });
   }
   if (!["customer", "maid"].includes(role)) {
     return res.status(400).json({ error: "role must be customer or maid" });
   }
 
-  let payload;
+  // Verify access token by fetching Google userinfo
+  let googleUser;
   try {
-    const ticket = await googleClient.verifyIdToken({
-      idToken: id_token,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    payload = ticket.getPayload();
-  } catch {
-    return res.status(401).json({ error: "invalid google token" });
+    const response = await fetch(
+      "https://www.googleapis.com/oauth2/v3/userinfo",
+      {
+        headers: { Authorization: `Bearer ${access_token}` },
+      },
+    );
+
+    if (!response.ok) {
+      return res.status(401).json({ error: "invalid google access token" });
+    }
+
+    googleUser = await response.json();
+  } catch (err) {
+    console.error("[auth.controller/googleLogin] google verify failed", err);
+    return res.status(401).json({ error: "failed to verify google token" });
   }
 
-  const { sub: google_id, email, name, picture: avatar } = payload;
+  const { sub: google_id, email, name, picture: avatar } = googleUser;
+
+  if (!google_id || !email) {
+    return res.status(401).json({ error: "incomplete google profile" });
+  }
 
   try {
     const { rows } = await req.db.query(
