@@ -10,6 +10,7 @@ import maidsRoutes from "./src/routes/maids.js";
 import bookingsRoutes from "./src/routes/bookings.js";
 import paymentsRoutes from "./src/routes/payments.js";
 import adminRoutes from "./src/routes/admin.js";
+import leadsRoutes from "./src/routes/leads.js";
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -35,6 +36,7 @@ app.use("/api/maids", maidsRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/leads", leadsRoutes);
 
 app.get("/health", async (_req, res) => {
   const status = { postgres: "ok", redis: "ok" };
@@ -44,7 +46,9 @@ app.get("/health", async (_req, res) => {
     status.postgres = e.message;
   }
   try {
-    await redis.ping();
+    await redis.ping().catch(() => {
+      throw new Error("unavailable");
+    });
   } catch (e) {
     status.redis = e.message;
   }
