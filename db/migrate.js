@@ -14,33 +14,34 @@ async function migrate() {
   try {
     await client.query("BEGIN");
 
-    // ─── Extensions ─────────────────────────────────────────
+    // ─── Drop old tables ─────────────────────────────────────
+    await client.query(`
+      DROP TABLE IF EXISTS reviews, payments, bookings, maid_profiles, users CASCADE
+    `);
+    await client.query(`
+      DROP TYPE IF EXISTS payment_status, booking_status, user_role CASCADE
+    `);
+    console.log("[migrate] dropped old tables and types");
+
+    // ─── Extensions ──────────────────────────────────────────
     await client.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
 
-    // ─── Enums ──────────────────────────────────────────────
+    // ─── Enums ───────────────────────────────────────────────
+    await client.query(
+      `CREATE TYPE user_role AS ENUM ('customer', 'maid', 'admin')`,
+    );
     await client.query(`
-      DO $$ BEGIN
-        CREATE TYPE user_role AS ENUM ('customer', 'maid', 'admin');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
+      CREATE TYPE booking_status AS ENUM (
+        'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
+      )
+    `);
+    await client.query(`
+      CREATE TYPE payment_status AS ENUM ('pending', 'success', 'failed', 'refunded')
     `);
 
+    // ─── Users ───────────────────────────────────────────────
     await client.query(`
-      DO $$ BEGIN
-        CREATE TYPE booking_status AS ENUM (
-          'pending', 'confirmed', 'in_progress', 'completed', 'cancelled'
-        );
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
-    `);
-
-    await client.query(`
-      DO $$ BEGIN
-        CREATE TYPE payment_status AS ENUM ('pending', 'success', 'failed', 'refunded');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
-    `);
-
-    // ─── Users ──────────────────────────────────────────────
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
+      CREATE TABLE users (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email       TEXT UNIQUE NOT NULL,
         name        TEXT NOT NULL,
@@ -53,9 +54,9 @@ async function migrate() {
       )
     `);
 
-    // ─── Maid profiles ──────────────────────────────────────
+    // ─── Maid profiles ───────────────────────────────────────
     await client.query(`
-      CREATE TABLE IF NOT EXISTS maid_profiles (
+      CREATE TABLE maid_profiles (
         id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         bio            TEXT,
@@ -71,9 +72,9 @@ async function migrate() {
       )
     `);
 
-    // ─── Bookings ───────────────────────────────────────────
+    // ─── Bookings ────────────────────────────────────────────
     await client.query(`
-      CREATE TABLE IF NOT EXISTS bookings (
+      CREATE TABLE bookings (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         customer_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         maid_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -88,9 +89,9 @@ async function migrate() {
       )
     `);
 
-    // ─── Payments ───────────────────────────────────────────
+    // ─── Payments ────────────────────────────────────────────
     await client.query(`
-      CREATE TABLE IF NOT EXISTS payments (
+      CREATE TABLE payments (
         id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         booking_id           UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
         customer_id          UUID NOT NULL REFERENCES users(id),
@@ -104,9 +105,9 @@ async function migrate() {
       )
     `);
 
-    // ─── Reviews ────────────────────────────────────────────
+    // ─── Reviews ─────────────────────────────────────────────
     await client.query(`
-      CREATE TABLE IF NOT EXISTS reviews (
+      CREATE TABLE reviews (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         booking_id  UUID NOT NULL UNIQUE REFERENCES bookings(id) ON DELETE CASCADE,
         customer_id UUID NOT NULL REFERENCES users(id),
@@ -117,33 +118,29 @@ async function migrate() {
       )
     `);
 
-    // ─── Indexes ────────────────────────────────────────────
+    // ─── Indexes ─────────────────────────────────────────────
     const indexes = [
-      `CREATE INDEX IF NOT EXISTS idx_maid_profiles_user_id  ON maid_profiles(user_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_maid_profiles_available ON maid_profiles(is_available)`,
-      `CREATE INDEX IF NOT EXISTS idx_bookings_customer       ON bookings(customer_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_bookings_maid           ON bookings(maid_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_bookings_status         ON bookings(status)`,
-      `CREATE INDEX IF NOT EXISTS idx_payments_booking        ON payments(booking_id)`,
-      `CREATE INDEX IF NOT EXISTS idx_payments_reference      ON payments(paystack_reference)`,
+      `CREATE INDEX idx_maid_profiles_user_id   ON maid_profiles(user_id)`,
+      `CREATE INDEX idx_maid_profiles_available  ON maid_profiles(is_available)`,
+      `CREATE INDEX idx_bookings_customer        ON bookings(customer_id)`,
+      `CREATE INDEX idx_bookings_maid            ON bookings(maid_id)`,
+      `CREATE INDEX idx_bookings_status          ON bookings(status)`,
+      `CREATE INDEX idx_payments_booking         ON payments(booking_id)`,
+      `CREATE INDEX idx_payments_reference       ON payments(paystack_reference)`,
     ];
-
     for (const idx of indexes) {
       await client.query(idx);
     }
 
-    // ─── updated_at trigger function ────────────────────────
+    // ─── updated_at trigger ──────────────────────────────────
     await client.query(`
       CREATE OR REPLACE FUNCTION update_updated_at()
       RETURNS TRIGGER AS $$
       BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
       $$ LANGUAGE plpgsql
     `);
-
-    const triggerTables = ["users", "maid_profiles", "bookings"];
-    for (const table of triggerTables) {
+    for (const table of ["users", "maid_profiles", "bookings"]) {
       await client.query(`
-        DROP TRIGGER IF EXISTS trg_${table}_updated_at ON ${table};
         CREATE TRIGGER trg_${table}_updated_at
           BEFORE UPDATE ON ${table}
           FOR EACH ROW EXECUTE FUNCTION update_updated_at()
@@ -151,10 +148,10 @@ async function migrate() {
     }
 
     await client.query("COMMIT");
-    console.log("[migrate] all tables created successfully");
+    console.log("[migrate] ✓ all tables created successfully");
   } catch (err) {
     await client.query("ROLLBACK");
-    console.error("[migrate] failed, rolled back:", err);
+    console.error("[migrate] failed, rolled back:", err.message);
     process.exit(1);
   } finally {
     client.release();
