@@ -53,20 +53,26 @@ export const googleLogin = async (req, res) => {
     );
 
     let user;
+    let isNewUser = false;
 
     if (existingRows.length > 0) {
-      // User exists - update them
+      // ── User exists - DON'T change role, just update name/avatar ────────
       const existingUser = existingRows[0];
+
       const { rows: updatedRows } = await req.db.query(
         `UPDATE users 
-         SET name = $1, avatar = $2, role = $3, is_active = true, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $4
+         SET name = $1, avatar = $2, is_active = true, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $3
          RETURNING *`,
-        [name, avatar, role, existingUser.id],
+        [name, avatar, existingUser.id],
       );
       user = updatedRows[0];
+
+      console.log(
+        `[auth.controller/googleLogin] Existing user login: ${user.email} (role: ${user.role})`,
+      );
     } else {
-      // New user - create them
+      // ── New user - set role based on their selection ────────────────────
       const { rows: insertedRows } = await req.db.query(
         `INSERT INTO users (email, name, avatar, google_id, role, is_active)
          VALUES ($1, $2, $3, $4, $5, true)
@@ -74,6 +80,11 @@ export const googleLogin = async (req, res) => {
         [email, name, avatar, google_id, role],
       );
       user = insertedRows[0];
+      isNewUser = true;
+
+      console.log(
+        `[auth.controller/googleLogin] New user signup: ${user.email} (role: ${user.role})`,
+      );
     }
 
     // ── 2. Handle maid profile creation ────────────────────────────────────
@@ -90,6 +101,10 @@ export const googleLogin = async (req, res) => {
           `INSERT INTO maid_profiles (user_id, hourly_rate, is_available)
            VALUES ($1, 0, false)`,
           [user.id],
+        );
+
+        console.log(
+          `[auth.controller/googleLogin] Created maid profile for user ${user.id}`,
         );
       }
     }
