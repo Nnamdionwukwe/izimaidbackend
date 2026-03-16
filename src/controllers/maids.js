@@ -259,3 +259,72 @@ export const adminDeleteReview = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+export const adminListMaids = async (req, res) => {
+  const {
+    location,
+    service,
+    min_rate,
+    max_rate,
+    page = 1,
+    limit = 20,
+  } = req.query;
+  const offset = (Number(page) - 1) * Number(limit);
+
+  // No is_available or is_active filter — admins see everything
+  const conditions = [];
+  const params = [];
+
+  if (location) {
+    params.push(`%${location}%`);
+    conditions.push(`mp.location ILIKE $${params.length}`);
+  }
+  if (service) {
+    params.push(service);
+    conditions.push(`$${params.length} = ANY(mp.services)`);
+  }
+  if (min_rate) {
+    params.push(Number(min_rate));
+    conditions.push(`mp.hourly_rate >= $${params.length}`);
+  }
+  if (max_rate) {
+    params.push(Number(max_rate));
+    conditions.push(`mp.hourly_rate <= $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const filterParams = [...params];
+  params.push(Number(limit), offset);
+
+  try {
+    const { rows } = await req.db.query(
+      `SELECT u.id, u.name, u.avatar, u.is_active,
+              mp.bio, mp.hourly_rate, mp.years_exp,
+              mp.services, mp.location, mp.rating,
+              mp.total_reviews, mp.is_available
+       FROM maid_profiles mp
+       JOIN users u ON u.id = mp.user_id
+       ${where}
+       ORDER BY mp.rating DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+
+    const { rows: countRows } = await req.db.query(
+      `SELECT COUNT(*) FROM maid_profiles mp
+       JOIN users u ON u.id = mp.user_id
+       ${where}`,
+      filterParams,
+    );
+
+    return res.json({
+      maids: rows,
+      total: Number(countRows[0].count),
+      page: Number(page),
+      limit: Number(limit),
+    });
+  } catch (err) {
+    console.error("[maids.controller/adminListMaids]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};

@@ -5,6 +5,7 @@ import {
   getMaid,
   updateProfile,
   getMaidReviews,
+  adminListMaids,
   adminUpdateMaid,
   adminDeactivateMaid,
   adminActivateMaid,
@@ -13,15 +14,16 @@ import {
 
 const router = Router();
 
-// ─── Public ──────────────────────────────────────────────────────────────────
+// ─── Public ──────────────────────────────────────────────────
 router.get("/", listMaids);
 router.get("/:id", getMaid);
 router.get("/:id/reviews", getMaidReviews);
 
-// ─── Maid (self) ─────────────────────────────────────────────────────────────
+// ─── Maid (self) ─────────────────────────────────────────────
 router.patch("/profile", requireAuth, requireRole("maid"), updateProfile);
 
-// ─── Admin ───────────────────────────────────────────────────────────────────
+// ─── Admin ───────────────────────────────────────────────────
+router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 router.patch("/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
 router.patch(
   "/:id/deactivate",
@@ -42,4 +44,4 @@ router.delete(
   adminDeleteReview,
 );
 
-export default router;
+export default router; // ← this was missing
