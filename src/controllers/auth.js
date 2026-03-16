@@ -46,33 +46,55 @@ export const googleLogin = async (req, res) => {
   }
 
   try {
-    // Insert or update user - including role update on conflict
-    const { rows } = await req.db.query(
-      `INSERT INTO users (email, name, avatar, google_id, role, is_active)
-       VALUES ($1, $2, $3, $4, $5, true)
-       ON CONFLICT (google_id) DO UPDATE
-         SET name = EXCLUDED.name, 
-             avatar = EXCLUDED.avatar,
-             role = EXCLUDED.role,
-             is_active = true,
-             updated_at = CURRENT_TIMESTAMP
-       RETURNING *`,
-      [email, name, avatar, google_id, role],
+    // ── 1. Check if user already exists ────────────────────────────────────
+    const { rows: existingRows } = await req.db.query(
+      "SELECT * FROM users WHERE google_id = $1",
+      [google_id],
     );
 
-    const user = rows[0];
+    let user;
 
-    // Only create maid profile if user role is maid and profile doesn't exist
-    if (user.role === "maid") {
-      await req.db.query(
-        `INSERT INTO maid_profiles (user_id, hourly_rate, is_available)
-         VALUES ($1, 0, false)
-         ON CONFLICT (user_id) DO NOTHING`,
-        [user.id],
+    if (existingRows.length > 0) {
+      // User exists - update them
+      const existingUser = existingRows[0];
+      const { rows: updatedRows } = await req.db.query(
+        `UPDATE users 
+         SET name = $1, avatar = $2, role = $3, is_active = true, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $4
+         RETURNING *`,
+        [name, avatar, role, existingUser.id],
       );
+      user = updatedRows[0];
+    } else {
+      // New user - create them
+      const { rows: insertedRows } = await req.db.query(
+        `INSERT INTO users (email, name, avatar, google_id, role, is_active)
+         VALUES ($1, $2, $3, $4, $5, true)
+         RETURNING *`,
+        [email, name, avatar, google_id, role],
+      );
+      user = insertedRows[0];
     }
 
-    // Cache the user
+    // ── 2. Handle maid profile creation ────────────────────────────────────
+    if (user.role === "maid") {
+      // Check if maid profile exists
+      const { rows: profileRows } = await req.db.query(
+        "SELECT id FROM maid_profiles WHERE user_id = $1",
+        [user.id],
+      );
+
+      if (profileRows.length === 0) {
+        // Create maid profile if it doesn't exist
+        await req.db.query(
+          `INSERT INTO maid_profiles (user_id, hourly_rate, is_available)
+           VALUES ($1, 0, false)`,
+          [user.id],
+        );
+      }
+    }
+
+    // ── 3. Cache the user ──────────────────────────────────────────────────
     await safeSet(`user:${user.id}`, 60 * 60 * 24 * 7, JSON.stringify(user));
 
     return res.status(200).json({ token: signToken(user), user });
@@ -112,12 +134,6 @@ export const logout = async (req, res) => {
   try {
     // Delete user cache
     await safeDel(`user:${req.user.id}`);
-
-    // Optional: Mark user as inactive in database
-    // await req.db.query(
-    //   "UPDATE users SET last_logout = CURRENT_TIMESTAMP WHERE id = $1",
-    //   [req.user.id],
-    // );
 
     return res.json({ message: "logged out" });
   } catch (err) {
