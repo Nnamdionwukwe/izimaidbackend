@@ -1,5 +1,5 @@
 import jwt from "jsonwebtoken";
-import { safeGet, safeSet, safeDel } from "../src/config/redis.js";
+import { safeGet, safeSet, safeDel } from "../config/redis.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
