@@ -1,3 +1,8 @@
+import jwt from "jsonwebtoken";
+import { safeGet, safeSet, safeDel } from "../config/redis.js";
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
 export const listUsers = async (req, res) => {
   const { role, page = 1, limit = 50 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
@@ -14,7 +19,7 @@ export const listUsers = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `SELECT id, email, name, avatar, role, is_active, created_at
+      `SELECT id, email, name, avatar, role, is_active, created_at, google_id
        FROM users ${where}
        ORDER BY created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -48,15 +53,108 @@ export const updateUser = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `UPDATE users SET ${fields.join(", ")} WHERE id = $${params.length} RETURNING *`,
+      `UPDATE users SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = $${params.length} RETURNING *`,
       params,
     );
     if (!rows.length) return res.status(404).json({ error: "user not found" });
 
-    await req.redis.del(`user:${req.params.id}`);
+    // Clear user cache
+    await safeDel(`user:${req.params.id}`);
+
     return res.json({ user: rows[0] });
   } catch (err) {
     console.error("[admin.controller/updateUser]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const deleteUser = async (req, res) => {
+  const userId = req.params.id;
+
+  // Prevent admin from deleting themselves
+  if (Number(userId) === Number(req.user.id)) {
+    return res
+      .status(400)
+      .json({ error: "You cannot delete your own account" });
+  }
+
+  try {
+    // Start transaction
+    const client = await req.db.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Check if user exists
+      const { rows: userRows } = await client.query(
+        "SELECT id, role FROM users WHERE id = $1",
+        [userId],
+      );
+
+      if (!userRows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "user not found" });
+      }
+
+      const user = userRows[0];
+
+      // Delete related data based on user role
+      if (user.role === "maid") {
+        // Delete maid profile
+        await client.query("DELETE FROM maid_profiles WHERE user_id = $1", [
+          userId,
+        ]);
+
+        // Delete or reassign maid's bookings
+        // Option 1: Delete bookings (uncomment if preferred)
+        // await client.query("DELETE FROM bookings WHERE maid_id = $1", [userId]);
+
+        // Option 2: Mark bookings as cancelled (recommended)
+        await client.query(
+          "UPDATE bookings SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE maid_id = $1 AND status NOT IN ('completed', 'cancelled')",
+          [userId],
+        );
+
+        // Delete maid's reviews
+        await client.query("DELETE FROM reviews WHERE maid_id = $1", [userId]);
+      }
+
+      if (user.role === "customer") {
+        // Delete or reassign customer's bookings
+        // Option 1: Delete bookings (uncomment if preferred)
+        // await client.query("DELETE FROM bookings WHERE customer_id = $1", [userId]);
+
+        // Option 2: Mark bookings as cancelled (recommended)
+        await client.query(
+          "UPDATE bookings SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE customer_id = $1 AND status NOT IN ('completed', 'cancelled')",
+          [userId],
+        );
+      }
+
+      // Delete user payments
+      await client.query(
+        "DELETE FROM payments WHERE booking_id IN (SELECT id FROM bookings WHERE customer_id = $1 OR maid_id = $1)",
+        [userId],
+      );
+
+      // Delete user
+      await client.query("DELETE FROM users WHERE id = $1", [userId]);
+
+      // Commit transaction
+      await client.query("COMMIT");
+
+      // Clear user cache
+      await safeDel(`user:${userId}`);
+
+      return res.json({ message: "user deleted successfully" });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("[admin.controller/deleteUser]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
