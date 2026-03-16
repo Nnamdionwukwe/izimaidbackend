@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { safeGet, safeSet, safeDel } from "../src/config/redis.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
@@ -21,7 +22,6 @@ export const googleLogin = async (req, res) => {
     return res.status(400).json({ error: "role must be customer or maid" });
   }
 
-  // Verify access token by fetching Google userinfo
   let googleUser;
   try {
     const response = await fetch(
@@ -30,11 +30,9 @@ export const googleLogin = async (req, res) => {
         headers: { Authorization: `Bearer ${access_token}` },
       },
     );
-
     if (!response.ok) {
       return res.status(401).json({ error: "invalid google access token" });
     }
-
     googleUser = await response.json();
   } catch (err) {
     console.error("[auth.controller/googleLogin] google verify failed", err);
@@ -67,11 +65,7 @@ export const googleLogin = async (req, res) => {
       );
     }
 
-    await req.redis.setEx(
-      `user:${user.id}`,
-      60 * 60 * 24 * 7,
-      JSON.stringify(user),
-    );
+    await safeSet(`user:${user.id}`, 60 * 60 * 24 * 7, JSON.stringify(user));
 
     return res.status(200).json({ token: signToken(user), user });
   } catch (err) {
@@ -82,7 +76,7 @@ export const googleLogin = async (req, res) => {
 
 export const getMe = async (req, res) => {
   try {
-    const cached = await req.redis.get(`user:${req.user.id}`);
+    const cached = await safeGet(`user:${req.user.id}`);
     if (cached) return res.json({ user: JSON.parse(cached) });
 
     const { rows } = await req.db.query("SELECT * FROM users WHERE id = $1", [
@@ -99,7 +93,7 @@ export const getMe = async (req, res) => {
 
 export const logout = async (req, res) => {
   try {
-    await req.redis.del(`user:${req.user.id}`);
+    await safeDel(`user:${req.user.id}`);
     return res.json({ message: "logged out" });
   } catch (err) {
     console.error("[auth.controller/logout]", err);
