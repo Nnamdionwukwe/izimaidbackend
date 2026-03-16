@@ -160,3 +160,102 @@ export const getMaidReviews = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+// Add to maids.controller.js
+
+export const adminUpdateMaid = async (req, res) => {
+  const { bio, hourly_rate, years_exp, services, location, is_available } =
+    req.body;
+
+  const fields = [];
+  const params = [];
+
+  if (bio !== undefined) {
+    params.push(bio);
+    fields.push(`bio = $${params.length}`);
+  }
+  if (hourly_rate !== undefined) {
+    params.push(hourly_rate);
+    fields.push(`hourly_rate = $${params.length}`);
+  }
+  if (years_exp !== undefined) {
+    params.push(years_exp);
+    fields.push(`years_exp = $${params.length}`);
+  }
+  if (services !== undefined) {
+    params.push(services);
+    fields.push(`services = $${params.length}`);
+  }
+  if (location !== undefined) {
+    params.push(location);
+    fields.push(`location = $${params.length}`);
+  }
+  if (is_available !== undefined) {
+    params.push(is_available);
+    fields.push(`is_available = $${params.length}`);
+  }
+
+  if (!fields.length)
+    return res.status(400).json({ error: "no fields to update" });
+
+  params.push(req.params.id);
+
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE maid_profiles SET ${fields.join(", ")}
+       WHERE user_id = $${params.length} RETURNING *`,
+      params,
+    );
+    if (!rows.length)
+      return res.status(404).json({ error: "profile not found" });
+    return res.json({ profile: rows[0] });
+  } catch (err) {
+    console.error("[maids.controller/adminUpdateMaid]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const adminDeactivateMaid = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE users SET is_active = false
+       WHERE id = $1 AND role = 'maid' RETURNING id, name, is_active`,
+      [req.params.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "maid not found" });
+    return res.json({ message: "maid deactivated", user: rows[0] });
+  } catch (err) {
+    console.error("[maids.controller/adminDeactivateMaid]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const adminActivateMaid = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE users SET is_active = true
+       WHERE id = $1 AND role = 'maid' RETURNING id, name, is_active`,
+      [req.params.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "maid not found" });
+    return res.json({ message: "maid activated", user: rows[0] });
+  } catch (err) {
+    console.error("[maids.controller/adminActivateMaid]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const adminDeleteReview = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `DELETE FROM reviews WHERE id = $1 AND maid_id = $2 RETURNING id`,
+      [req.params.reviewId, req.params.id],
+    );
+    if (!rows.length)
+      return res.status(404).json({ error: "review not found" });
+    return res.json({ message: "review deleted" });
+  } catch (err) {
+    console.error("[maids.controller/adminDeleteReview]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
