@@ -14,11 +14,26 @@ import leadsRoutes from "./src/routes/leads.js";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://deusizisparkle.com",
+  "https://www.deusizisparkle.com",
+  process.env.CORS_ORIGIN,
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || "*",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS blocked: ${origin}`));
+      }
+    },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   }),
 );
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
