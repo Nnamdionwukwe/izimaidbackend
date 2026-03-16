@@ -1,68 +1,109 @@
-import { createClient } from "redis";
+import jwt from "jsonwebtoken";
+import { safeGet, safeSet, safeDel } from "../config/redis.js";
 
-const redisUrl = process.env.REDIS_URL;
-const isProduction = process.env.NODE_ENV === "production";
-const isInternalUrl =
-  redisUrl?.includes("railway.internal") || redisUrl?.includes("localhost");
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
 
-const client = createClient({
-  url: redisUrl,
-  socket: {
-    tls: isProduction && !isInternalUrl,
-    rejectUnauthorized: false,
-    connectTimeout: 5000,
-    reconnectStrategy: (retries) => {
-      if (retries > 3) {
-        console.log("⚠️  Redis unavailable — continuing without cache");
-        return false;
-      }
-      return Math.min(retries * 500, 2000);
-    },
-  },
-});
+function signToken(user) {
+  return jwt.sign(
+    { id: user.id, email: user.email, role: user.role },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES },
+  );
+}
 
-client.on("error", (err) => {
-  if (err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED") {
-    console.warn("⚠️  Redis connection failed — cache disabled");
-  } else {
-    console.error("✗ Redis client error:", err.message);
+export const googleLogin = async (req, res) => {
+  const { access_token, role = "customer" } = req.body;
+
+  if (!access_token) {
+    return res.status(400).json({ error: "access_token is required" });
   }
-});
+  if (!["customer", "maid"].includes(role)) {
+    return res.status(400).json({ error: "role must be customer or maid" });
+  }
 
-client.on("connect", () => console.log("✓ Redis connected"));
-client.on("ready", () => console.log("✓ Redis ready"));
-
-client.connect().catch(() => {
-  console.warn("⚠️  Could not connect to Redis — continuing without cache");
-});
-
-// Safe wrappers — never throw if Redis is down
-export const safeGet = async (key) => {
+  // Verify access token by fetching Google userinfo
+  let googleUser;
   try {
-    return await client.get(key);
-  } catch {
-    return null;
+    const response = await fetch(
+      "https://www.googleapis.com/oauth2/v3/userinfo",
+      { headers: { Authorization: `Bearer ${access_token}` } },
+    );
+    if (!response.ok) {
+      return res.status(401).json({ error: "invalid google access token" });
+    }
+    googleUser = await response.json();
+  } catch (err) {
+    console.error("[auth.controller/googleLogin] google verify failed", err);
+    return res.status(401).json({ error: "failed to verify google token" });
+  }
+
+  const { sub: google_id, email, name, picture: avatar } = googleUser;
+  if (!google_id || !email) {
+    return res.status(401).json({ error: "incomplete google profile" });
+  }
+
+  try {
+    const { rows } = await req.db.query(
+      `INSERT INTO users (email, name, avatar, google_id, role)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (google_id) DO UPDATE
+         SET name = EXCLUDED.name, avatar = EXCLUDED.avatar
+       RETURNING *`,
+      [email, name, avatar, google_id, role],
+    );
+
+    const user = rows[0];
+
+    if (user.role === "maid") {
+      await req.db.query(
+        `INSERT INTO maid_profiles (user_id, hourly_rate)
+         VALUES ($1, 0) ON CONFLICT DO NOTHING`,
+        [user.id],
+      );
+    }
+
+    // Cache user — safe wrapper never throws if Redis is down
+    await safeSet(`user:${user.id}`, 60 * 60 * 24 * 7, JSON.stringify(user));
+
+    return res.status(200).json({ token: signToken(user), user });
+  } catch (err) {
+    console.error("[auth.controller/googleLogin]", err);
+    return res.status(500).json({ error: "internal server error" });
   }
 };
 
-export const safeSet = async (key, ttl, value) => {
+export const getMe = async (req, res) => {
   try {
-    await client.setEx(key, ttl, value);
-  } catch {}
-};
+    // Try cache first
+    const cached = await safeGet(`user:${req.user.id}`);
+    if (cached) return res.json({ user: JSON.parse(cached) });
 
-export const safeDel = async (key) => {
-  try {
-    await client.del(key);
-  } catch {}
-};
+    const { rows } = await req.db.query("SELECT * FROM users WHERE id = $1", [
+      req.user.id,
+    ]);
+    if (!rows.length) return res.status(404).json({ error: "user not found" });
 
-export const safePing = async () => {
-  try {
-    return await client.ping();
-  } catch {
-    return null;
+    // Refresh cache
+    await safeSet(
+      `user:${rows[0].id}`,
+      60 * 60 * 24 * 7,
+      JSON.stringify(rows[0]),
+    );
+
+    return res.json({ user: rows[0] });
+  } catch (err) {
+    console.error("[auth.controller/getMe]", err);
+    return res.status(500).json({ error: "internal server error" });
   }
 };
 
-export default client;
+export const logout = async (req, res) => {
+  try {
+    await safeDel(`user:${req.user.id}`);
+    return res.json({ message: "logged out" });
+  } catch (err) {
+    console.error("[auth.controller/logout]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
