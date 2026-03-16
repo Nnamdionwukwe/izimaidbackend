@@ -1,14 +1,14 @@
 import { createClient } from "redis";
 
 const redisUrl = process.env.REDIS_URL;
-const isProduction = process.env.NODE_ENV === "production";
-const isInternalUrl =
-  redisUrl?.includes("railway.internal") || redisUrl?.includes("localhost");
+
+// Only use TLS if the URL itself uses rediss:// protocol
+const useTLS = redisUrl?.startsWith("rediss://");
 
 const client = createClient({
   url: redisUrl,
   socket: {
-    tls: isProduction && !isInternalUrl,
+    tls: useTLS,
     rejectUnauthorized: false,
     connectTimeout: 5000,
     reconnectStrategy: (retries) => {
@@ -36,7 +36,6 @@ client.connect().catch(() => {
   console.warn("⚠️  Could not connect to Redis — continuing without cache");
 });
 
-// Safe wrappers — never throw if Redis is down
 export const safeGet = async (key) => {
   try {
     return await client.get(key);
