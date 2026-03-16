@@ -144,7 +144,7 @@ export const getMaidReviews = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `SELECT r.rating, r.comment, r.created_at,
+      `SELECT r.id, r.rating, r.comment, r.created_at,   -- ← add r.id
               u.name as customer_name, u.avatar as customer_avatar
        FROM reviews r
        JOIN users u ON u.id = r.customer_id
