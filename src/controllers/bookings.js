@@ -2,11 +2,9 @@ export const createBooking = async (req, res) => {
   const { maid_id, service_date, duration_hours, address, notes } = req.body;
 
   if (!maid_id || !service_date || !duration_hours || !address) {
-    return res
-      .status(400)
-      .json({
-        error: "maid_id, service_date, duration_hours, address are required",
-      });
+    return res.status(400).json({
+      error: "maid_id, service_date, duration_hours, address are required",
+    });
   }
 
   try {
@@ -127,32 +125,73 @@ export const getBooking = async (req, res) => {
 };
 
 export const updateStatus = async (req, res) => {
-  const { status } = req.body;
+  const { status, declined_reason, declined_by } = req.body;
 
+  // ── Valid status transitions by role ────────────────────────────────────
   const validTransitions = {
     customer: ["cancelled"],
-    maid: ["confirmed", "in_progress", "completed"],
-    admin: ["pending", "confirmed", "in_progress", "completed", "cancelled"],
+    maid: ["confirmed", "in_progress", "completed", "declined"],
+    admin: [
+      "pending",
+      "confirmed",
+      "in_progress",
+      "completed",
+      "cancelled",
+      "declined",
+    ],
   };
 
   if (!validTransitions[req.user.role]?.includes(status)) {
-    return res
-      .status(400)
-      .json({ error: `invalid status transition for role ${req.user.role}` });
+    return res.status(400).json({
+      error: `invalid status transition for role ${req.user.role}`,
+    });
   }
 
   try {
-    const { rows } = await req.db.query(
-      `UPDATE bookings SET status = $1
-       WHERE id = $2 AND (customer_id = $3 OR maid_id = $3 OR $4 = 'admin')
-       RETURNING *`,
-      [status, req.params.id, req.user.id, req.user.role],
+    // ── Get the booking first ──────────────────────────────────────────────
+    const { rows: bookingRows } = await req.db.query(
+      `SELECT * FROM bookings 
+       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2 OR $3 = 'admin')`,
+      [req.params.id, req.user.id, req.user.role],
     );
 
-    if (!rows.length)
-      return res
-        .status(404)
-        .json({ error: "booking not found or not authorized" });
+    if (!bookingRows.length) {
+      return res.status(404).json({
+        error: "booking not found or not authorized",
+      });
+    }
+
+    // ── Build update query dynamically ─────────────────────────────────────
+    const updateFields = ["status = $1", "updated_at = CURRENT_TIMESTAMP"];
+    const params = [status, req.params.id, req.user.id, req.user.role];
+
+    // Handle declined status with optional reason
+    if (status === "declined") {
+      if (declined_by) {
+        updateFields.push(`declined_by = $${params.length + 1}`);
+        params.push(declined_by);
+      }
+
+      if (declined_reason) {
+        updateFields.push(`declined_reason = $${params.length + 1}`);
+        params.push(declined_reason);
+      }
+    }
+
+    const { rows } = await req.db.query(
+      `UPDATE bookings 
+       SET ${updateFields.join(", ")}
+       WHERE id = $2 AND (customer_id = $3 OR maid_id = $3 OR $4 = 'admin')
+       RETURNING *`,
+      params,
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        error: "booking not found or not authorized",
+      });
+    }
+
     return res.json({ booking: rows[0] });
   } catch (err) {
     console.error("[bookings.controller/updateStatus]", err);

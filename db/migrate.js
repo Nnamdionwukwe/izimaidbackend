@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 
 /**
- * Database Fix Script - Add Missing UNIQUE Constraint
+ * Database Migration - Fix: Add "declined" to booking_status ENUM
  *
- * This script fixes the error:
- * "there is no unique or exclusion constraint matching the ON CONFLICT specification"
- *
- * The ON CONFLICT (google_id) requires a UNIQUE constraint on google_id column
+ * The database has an ENUM type for booking status that doesn't include "declined"
+ * This script:
+ * 1. Creates a new ENUM type with all valid statuses including "declined"
+ * 2. Changes the column to use the new ENUM
+ * 3. Drops the old ENUM
+ * 4. Adds declined_by and declined_reason columns if missing
  *
  * Usage:
- *   node scripts/fix-db-constraint.js
- *   NODE_ENV=production node scripts/fix-db-constraint.js
+ *   node scripts/fix-booking-enum.js
  */
 
 import pkg from "pg";
@@ -27,135 +28,163 @@ const pool = new Pool({
       : false,
 });
 
-const log = (message) => console.log(`[Fix] ${message}`);
+const log = (message) => console.log(`[Migration] ${message}`);
 const error = (message) => console.error(`[ERROR] ${message}`);
 
-async function fixConstraints() {
+async function migrate() {
   const client = await pool.connect();
 
   try {
-    log("Starting database constraint fix...");
-    log(`Database: ${process.env.DATABASE_URL?.split("/").pop()}`);
+    log("Starting migration: Fix booking_status ENUM to include 'declined'...");
 
-    // ── 1. Check if google_id constraint exists ────────────────────────────
-    log("Checking for UNIQUE constraint on google_id...");
-    const checkConstraint = await client.query(`
-      SELECT constraint_name
-      FROM information_schema.table_constraints
-      WHERE table_name = 'users'
-      AND constraint_type = 'UNIQUE'
-      AND constraint_name LIKE '%google_id%'
+    await client.query("BEGIN");
+
+    // ── 1. Check current enum values ────────────────────────────────────────
+    log("Checking current booking_status enum values...");
+    const enumCheck = await client.query(`
+      SELECT enumlabel 
+      FROM pg_enum 
+      WHERE enumtypid = 'booking_status'::regtype
+      ORDER BY enumsortorder
     `);
 
-    if (checkConstraint.rows.length > 0) {
-      log(
-        `✓ UNIQUE constraint already exists: ${checkConstraint.rows[0].constraint_name}`,
-      );
-      return;
-    }
+    const currentValues = enumCheck.rows.map((row) => row.enumlabel);
+    log(`Current values: ${currentValues.join(", ")}`);
 
-    log("✗ No UNIQUE constraint found on google_id");
-
-    // ── 2. Check if there's a non-unique constraint or index ────────────────
-    log("Checking for existing indexes...");
-    const checkIndex = await client.query(`
-      SELECT indexname
-      FROM pg_indexes
-      WHERE tablename = 'users'
-      AND indexname LIKE '%google_id%'
-    `);
-
-    if (checkIndex.rows.length > 0) {
-      log(`Found index: ${checkIndex.rows[0].indexname}`);
-      log("Dropping non-unique index before creating constraint...");
-      await client.query(
-        `DROP INDEX IF EXISTS ${checkIndex.rows[0].indexname} CASCADE`,
-      );
-    }
-
-    // ── 3. Add UNIQUE constraint ────────────────────────────────────────────
-    log("Adding UNIQUE constraint to google_id...");
-    await client.query(
-      `ALTER TABLE users ADD CONSTRAINT users_google_id_key UNIQUE (google_id)`,
-    );
-    log("✓ UNIQUE constraint added successfully");
-
-    // ── 4. Verify constraint exists ─────────────────────────────────────────
-    log("Verifying constraint...");
-    const verify = await client.query(`
-      SELECT constraint_name
-      FROM information_schema.table_constraints
-      WHERE table_name = 'users'
-      AND constraint_type = 'UNIQUE'
-      AND constraint_name = 'users_google_id_key'
-    `);
-
-    if (verify.rows.length > 0) {
-      log("✓ Constraint verified successfully");
+    // Check if "declined" already exists
+    if (currentValues.includes("declined")) {
+      log("✓ 'declined' status already exists in enum");
+      // Still need to add columns
     } else {
-      throw new Error("Constraint verification failed");
+      log("'declined' status not found - adding it...");
+
+      // ── 2. Create new enum type with all values ────────────────────────────
+      const newValues = [
+        ...currentValues,
+        "declined", // Add new value
+      ];
+
+      log(`Creating new enum with values: ${newValues.join(", ")}`);
+
+      await client.query(`
+        CREATE TYPE booking_status_new AS ENUM (
+          ${newValues.map((v) => `'${v}'`).join(", ")}
+        )
+      `);
+
+      // ── 3. Convert column to use new enum ──────────────────────────────────
+      log("Updating bookings table to use new enum type...");
+
+      await client.query(`
+        ALTER TABLE bookings 
+        ALTER COLUMN status 
+        DROP DEFAULT
+      `);
+
+      await client.query(`
+        ALTER TABLE bookings 
+        ALTER COLUMN status 
+        TYPE booking_status_new 
+        USING status::text::booking_status_new
+      `);
+
+      await client.query(`
+        ALTER TABLE bookings 
+        ALTER COLUMN status 
+        SET DEFAULT 'pending'::booking_status_new
+      `);
+
+      log("✓ Column type updated");
+
+      // ── 4. Drop old enum ───────────────────────────────────────────────────
+      log("Dropping old enum type...");
+
+      await client.query(`
+        DROP TYPE booking_status
+      `);
+
+      // ── 5. Rename new enum ────────────────────────────────────────────────
+      log("Renaming new enum to booking_status...");
+
+      await client.query(`
+        ALTER TYPE booking_status_new RENAME TO booking_status
+      `);
+
+      log("✓ Enum updated successfully");
     }
 
-    // ── 5. Also add email UNIQUE constraint if missing ─────────────────────
-    log("Checking email UNIQUE constraint...");
-    const emailConstraint = await client.query(`
-      SELECT constraint_name
-      FROM information_schema.table_constraints
-      WHERE table_name = 'users'
-      AND constraint_type = 'UNIQUE'
-      AND constraint_name LIKE '%email%'
+    // ── 6. Add declined_by column ──────────────────────────────────────────
+    log("Checking for declined_by column...");
+    const declinedByCheck = await client.query(`
+      SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'bookings' AND column_name = 'declined_by'
     `);
 
-    if (emailConstraint.rows.length === 0) {
-      log("Adding UNIQUE constraint to email...");
-      await client.query(
-        `ALTER TABLE users ADD CONSTRAINT users_email_key UNIQUE (email)`,
-      );
-      log("✓ Email UNIQUE constraint added");
+    if (declinedByCheck.rows.length === 0) {
+      log("Adding declined_by column...");
+      await client.query(`
+        ALTER TABLE bookings 
+        ADD COLUMN declined_by VARCHAR(50)
+      `);
+      log("✓ declined_by column added");
     } else {
-      log(
-        `✓ Email constraint exists: ${emailConstraint.rows[0].constraint_name}`,
-      );
+      log("✓ declined_by column already exists");
     }
 
-    // ── 6. Check maid_profiles constraint ───────────────────────────────────
-    log("Checking maid_profiles UNIQUE constraint on user_id...");
-    const maidConstraint = await client.query(`
-      SELECT constraint_name
-      FROM information_schema.table_constraints
-      WHERE table_name = 'maid_profiles'
-      AND constraint_type = 'UNIQUE'
-      AND constraint_name LIKE '%user_id%'
+    // ── 7. Add declined_reason column ──────────────────────────────────────
+    log("Checking for declined_reason column...");
+    const declinedReasonCheck = await client.query(`
+      SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'bookings' AND column_name = 'declined_reason'
     `);
 
-    if (maidConstraint.rows.length === 0) {
-      log("Adding UNIQUE constraint to maid_profiles.user_id...");
-      await client.query(
-        `ALTER TABLE maid_profiles ADD CONSTRAINT maid_profiles_user_id_key UNIQUE (user_id)`,
-      );
-      log("✓ Maid profiles UNIQUE constraint added");
+    if (declinedReasonCheck.rows.length === 0) {
+      log("Adding declined_reason column...");
+      await client.query(`
+        ALTER TABLE bookings 
+        ADD COLUMN declined_reason TEXT
+      `);
+      log("✓ declined_reason column added");
     } else {
-      log(
-        `✓ Maid constraint exists: ${maidConstraint.rows[0].constraint_name}`,
-      );
+      log("✓ declined_reason column already exists");
     }
 
-    log("✅ All database constraints fixed successfully!");
+    // ── 8. Add index for declined bookings ──────────────────────────────────
+    log("Checking for declined status index...");
+    const indexCheck = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'bookings' AND indexname = 'idx_bookings_declined'
+    `);
+
+    if (indexCheck.rows.length === 0) {
+      log("Creating index for declined bookings...");
+      await client.query(`
+        CREATE INDEX idx_bookings_declined 
+        ON bookings(status) 
+        WHERE status = 'declined'
+      `);
+      log("✓ Index created");
+    } else {
+      log("✓ Index already exists");
+    }
+
+    await client.query("COMMIT");
+
+    log("✅ Migration completed successfully!");
+    log("Booking status enum now includes 'declined'");
+    log("Bookings table now has declined_by and declined_reason columns");
   } catch (err) {
-    error(`Fix failed: ${err.message}`);
-    if (err.message.includes("already exists")) {
-      log("(Constraint already exists - this is fine!)");
-    } else {
-      error(err);
-      process.exit(1);
-    }
+    await client.query("ROLLBACK");
+    error(`Migration failed: ${err.message}`);
+    error(err);
+    process.exit(1);
   } finally {
     client.release();
     await pool.end();
   }
 }
 
-fixConstraints().catch((err) => {
+migrate().catch((err) => {
   error(`Unexpected error: ${err.message}`);
   process.exit(1);
 });
