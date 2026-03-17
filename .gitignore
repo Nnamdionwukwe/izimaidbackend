@@ -3,3 +3,6 @@
 .env.production
 .env*.local
 node_modules/
+# Avatar uploads
+uploads/
+uploads/avatars/
