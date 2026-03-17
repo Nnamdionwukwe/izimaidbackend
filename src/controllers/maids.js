@@ -161,6 +161,98 @@ export const getMaidReviews = async (req, res) => {
   }
 };
 
+// Add this function to src/controllers/maids.controller.js
+
+import path from "path";
+import fs from "fs";
+
+// Avatar upload handler
+export const uploadAvatar = async (req, res) => {
+  try {
+    // Check if file was uploaded
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const userId = req.user.id;
+    const file = req.file;
+
+    // Create uploads directory if it doesn't exist
+    const uploadsDir = path.join(process.cwd(), "uploads", "avatars");
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    // Generate unique filename
+    const filename = `${userId}_${Date.now()}${path.extname(file.originalname)}`;
+    const filepath = path.join(uploadsDir, filename);
+
+    // Save file
+    fs.writeFileSync(filepath, file.buffer);
+
+    // Generate avatar URL
+    const avatar_url = `/uploads/avatars/${filename}`;
+
+    // Update user avatar in database
+    const { rows } = await req.db.query(
+      `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, avatar`,
+      [avatar_url, userId],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "user not found" });
+    }
+
+    return res.json({
+      message: "Avatar uploaded successfully",
+      avatar_url: rows[0].avatar,
+    });
+  } catch (err) {
+    console.error("[maids.controller/uploadAvatar]", err);
+    return res.status(500).json({ error: "Failed to upload avatar" });
+  }
+};
+
+// Alternative: Cloud storage version (using multer with cloud service)
+// If you want to use cloud storage like AWS S3 or Cloudinary instead:
+
+export const uploadAvatarCloud = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const userId = req.user.id;
+    const file = req.file;
+
+    // Example using a cloud storage service
+    // You would need to install the appropriate SDK (e.g., aws-sdk, cloudinary)
+    // const result = await uploadToCloud(file.buffer, `maid_${userId}`);
+    // const avatar_url = result.secure_url;
+
+    // For now, using local storage - replace with cloud service URL
+    const avatar_url = `/uploads/avatars/${userId}_${Date.now()}.jpg`;
+
+    // Update user avatar in database
+    const { rows } = await req.db.query(
+      `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, avatar`,
+      [avatar_url, userId],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "user not found" });
+    }
+
+    return res.json({
+      message: "Avatar uploaded successfully",
+      avatar_url: rows[0].avatar,
+    });
+  } catch (err) {
+    console.error("[maids.controller/uploadAvatarCloud]", err);
+    return res.status(500).json({ error: "Failed to upload avatar" });
+  }
+};
+
 // Add to maids.controller.js
 
 export const adminUpdateMaid = async (req, res) => {

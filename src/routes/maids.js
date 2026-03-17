@@ -1,47 +1,42 @@
-import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+// Add this to src/routes/maids.js
+
+import express from "express";
+import multer from "multer";
 import {
   listMaids,
   getMaid,
   updateProfile,
   getMaidReviews,
-  adminListMaids,
-  adminUpdateMaid,
-  adminDeactivateMaid,
-  adminActivateMaid,
-  adminDeleteReview,
+  uploadAvatar, // Import the new controller
 } from "../controllers/maids.js";
+import { requireAuth } from "../middleware/auth.js";
 
-const router = Router();
+const router = express.Router();
 
-// ─── Public ──────────────────────────────────────────────────
+// Configure multer for file upload
+const storage = multer.memoryStorage(); // Store in memory, or use disk storage
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    // Only accept image files
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed"), false);
+    }
+  },
+});
+
+// Public routes
 router.get("/", listMaids);
 router.get("/:id", getMaid);
 router.get("/:id/reviews", getMaidReviews);
 
-// ─── Maid (self) ─────────────────────────────────────────────
-router.patch("/profile", requireAuth, requireRole("maid"), updateProfile);
+// Protected routes (require authentication)
+router.patch("/profile", requireAuth, updateProfile);
 
-// ─── Admin ───────────────────────────────────────────────────
-router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
-router.patch("/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
-router.patch(
-  "/:id/deactivate",
-  requireAuth,
-  requireRole("admin"),
-  adminDeactivateMaid,
-);
-router.patch(
-  "/:id/activate",
-  requireAuth,
-  requireRole("admin"),
-  adminActivateMaid,
-);
-router.delete(
-  "/:id/reviews/:reviewId",
-  requireAuth,
-  requireRole("admin"),
-  adminDeleteReview,
-);
+// Avatar upload route (POST /api/maids/avatar)
+router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 
-export default router; // ← this was missing
+export default router;
