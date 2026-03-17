@@ -1,5 +1,3 @@
-// src/routes/maids.js - FIXED VERSION
-
 import express from "express";
 import multer from "multer";
 import {
@@ -8,18 +6,22 @@ import {
   updateProfile,
   getMaidReviews,
   uploadAvatar,
+  adminListMaids,
+  adminUpdateMaid,
+  adminDeactivateMaid,
+  adminActivateMaid,
+  adminDeleteReview,
 } from "../controllers/maids.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Configure multer for avatar uploads
+// ─── Multer config ────────────────────────────────────────────
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    console.log("[multer] File received:", file.originalname, file.mimetype);
     if (file.mimetype.startsWith("image/")) {
       cb(null, true);
     } else {
@@ -28,16 +30,39 @@ const upload = multer({
   },
 });
 
-// ⚠️ IMPORTANT: Avatar upload route MUST come FIRST before other routes
-// Otherwise /:id will catch it and it won't work
+// ─── Avatar ───────────────────────────────────────────────────
+// Must come before /:id to avoid being caught by the param route
 router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 
-// Public routes
+// ─── Admin ───────────────────────────────────────────────────
+// Must come before /:id for the same reason
+router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
+router.patch("/admin/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
+router.patch(
+  "/admin/:id/activate",
+  requireAuth,
+  requireRole("admin"),
+  adminActivateMaid,
+);
+router.patch(
+  "/admin/:id/deactivate",
+  requireAuth,
+  requireRole("admin"),
+  adminDeactivateMaid,
+);
+router.delete(
+  "/admin/:id/reviews/:reviewId",
+  requireAuth,
+  requireRole("admin"),
+  adminDeleteReview,
+);
+
+// ─── Public ──────────────────────────────────────────────────
 router.get("/", listMaids);
 router.get("/:id", getMaid);
 router.get("/:id/reviews", getMaidReviews);
 
-// Protected routes (require authentication)
+// ─── Maid (self) ─────────────────────────────────────────────
 router.patch("/profile", requireAuth, updateProfile);
 
 export default router;

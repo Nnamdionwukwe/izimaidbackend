@@ -1,6 +1,5 @@
-// src/controllers/maids.js
 import { v2 as cloudinary } from "cloudinary";
-import streamifier from "streamifier"; // npm install streamifier
+import streamifier from "streamifier";
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -154,7 +153,7 @@ export const getMaidReviews = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `SELECT r.id, r.rating, r.comment, r.created_at,   -- ← add r.id
+      `SELECT r.id, r.rating, r.comment, r.created_at,
               u.name as customer_name, u.avatar as customer_avatar
        FROM reviews r
        JOIN users u ON u.id = r.customer_id
@@ -171,20 +170,17 @@ export const getMaidReviews = async (req, res) => {
   }
 };
 
-// Add this function to src/controllers/maids.controller.js
-
 export const uploadAvatar = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Upload buffer directly to Cloudinary via stream
     const uploadResult = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
           folder: "izimaid/avatars",
-          public_id: `user_${req.user.id}`, // overwrites previous avatar
+          public_id: `user_${req.user.id}`,
           overwrite: true,
           transformation: [
             { width: 400, height: 400, crop: "fill", gravity: "face" },
@@ -199,7 +195,6 @@ export const uploadAvatar = async (req, res) => {
       streamifier.createReadStream(req.file.buffer).pipe(stream);
     });
 
-    // Cloudinary returns a full HTTPS URL — store it directly
     const avatar_url = uploadResult.secure_url;
 
     const { rows } = await req.db.query(
@@ -207,61 +202,17 @@ export const uploadAvatar = async (req, res) => {
       [avatar_url, req.user.id],
     );
 
-    if (!rows.length) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    return res.json({
-      message: "Avatar uploaded successfully",
-      avatar_url: rows[0].avatar, // full https://res.cloudinary.com/... URL
-    });
-  } catch (err) {
-    console.error("[uploadAvatar]", err);
-    return res.status(500).json({ error: "Failed to upload avatar" });
-  }
-};
-
-// Alternative: Cloud storage version (using multer with cloud service)
-// If you want to use cloud storage like AWS S3 or Cloudinary instead:
-
-export const uploadAvatarCloud = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-
-    const userId = req.user.id;
-    const file = req.file;
-
-    // Example using a cloud storage service
-    // You would need to install the appropriate SDK (e.g., aws-sdk, cloudinary)
-    // const result = await uploadToCloud(file.buffer, `maid_${userId}`);
-    // const avatar_url = result.secure_url;
-
-    // For now, using local storage - replace with cloud service URL
-    const avatar_url = `/uploads/avatars/${userId}_${Date.now()}.jpg`;
-
-    // Update user avatar in database
-    const { rows } = await req.db.query(
-      `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, avatar`,
-      [avatar_url, userId],
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ error: "user not found" });
-    }
+    if (!rows.length) return res.status(404).json({ error: "user not found" });
 
     return res.json({
       message: "Avatar uploaded successfully",
       avatar_url: rows[0].avatar,
     });
   } catch (err) {
-    console.error("[maids.controller/uploadAvatarCloud]", err);
+    console.error("[maids.controller/uploadAvatar]", err);
     return res.status(500).json({ error: "Failed to upload avatar" });
   }
 };
-
-// Add to maids.controller.js
 
 export const adminUpdateMaid = async (req, res) => {
   const { bio, hourly_rate, years_exp, services, location, is_available } =
