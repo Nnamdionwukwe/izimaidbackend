@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import pool from "./src/config/database.js";
 import redis from "./src/config/redis.js";
@@ -10,6 +12,9 @@ import bookingsRoutes from "./src/routes/bookings.js";
 import paymentsRoutes from "./src/routes/payments.js";
 import adminRoutes from "./src/routes/admin.js";
 import leadsRoutes from "./src/routes/leads.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -36,6 +41,7 @@ app.use(
     credentials: true,
   }),
 );
+
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
@@ -45,6 +51,11 @@ app.use((req, _res, next) => {
   next();
 });
 
+// ✅ Serve static files for avatar uploads
+// This allows accessing uploaded images at: http://localhost:8080/uploads/avatars/filename.jpg
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+// API Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/maids", maidsRoutes);
 app.use("/api/bookings", bookingsRoutes);
@@ -86,6 +97,9 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`✓ izimaidbackend running on port ${PORT}`);
+  console.log(
+    `📸 Avatar uploads available at: http://localhost:${PORT}/uploads/avatars`,
+  );
 });
 
 export { pool, redis };
