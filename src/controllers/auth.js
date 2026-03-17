@@ -185,34 +185,28 @@ export const googleLogin = async (req, res) => {
   }
 };
 
+// auth.controller.js — update getMe
 export const getMe = async (req, res) => {
   console.log("👤 [GET ME] Fetching user:", req.user.id);
 
   try {
-    // Try cache first
     const cached = await safeGet(`user:${req.user.id}`);
     if (cached) {
       console.log("✅ [GET ME] User found in cache");
       return res.json({ user: JSON.parse(cached) });
     }
 
-    console.log("📋 [DB] Fetching user from database...");
-    // Fetch from database if not cached
     const { rows } = await req.db.query(
-      "SELECT * FROM users WHERE id = $1 AND is_active = true",
+      "SELECT id, name, email, avatar, role, created_at FROM users WHERE id = $1 AND is_active = true",
       [req.user.id],
     );
 
-    if (!rows.length) {
-      console.error("❌ [GET ME] User not found");
-      return res.status(404).json({ error: "user not found" });
-    }
+    if (!rows.length) return res.status(404).json({ error: "user not found" });
 
     const user = rows[0];
-    console.log("✅ [DB] User found:", user.email, "| Role:", user.role);
 
-    // Cache for future requests
-    await safeSet(`user:${user.id}`, 60 * 60 * 24 * 7, JSON.stringify(user));
+    // ✅ 5 minute TTL instead of 7 days — avatar changes propagate quickly
+    await safeSet(`user:${user.id}`, 60 * 5, JSON.stringify(user));
 
     return res.json({ user });
   } catch (err) {

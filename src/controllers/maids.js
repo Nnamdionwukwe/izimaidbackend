@@ -1,5 +1,6 @@
 import { v2 as cloudinary } from "cloudinary";
 import streamifier from "streamifier";
+import { safeSet, safeDel } from "../config/redis.js";
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -170,11 +171,11 @@ export const getMaidReviews = async (req, res) => {
   }
 };
 
+// maids.js controller — update uploadAvatar
+
 export const uploadAvatar = async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
     const uploadResult = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
@@ -198,11 +199,14 @@ export const uploadAvatar = async (req, res) => {
     const avatar_url = uploadResult.secure_url;
 
     const { rows } = await req.db.query(
-      `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, avatar`,
+      `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, name, email, avatar, role`,
       [avatar_url, req.user.id],
     );
 
     if (!rows.length) return res.status(404).json({ error: "user not found" });
+
+    // ✅ Bust the Redis cache so every device gets fresh data on next /me call
+    await safeDel(`user:${req.user.id}`);
 
     return res.json({
       message: "Avatar uploaded successfully",
