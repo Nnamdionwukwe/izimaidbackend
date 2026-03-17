@@ -1,3 +1,13 @@
+// src/controllers/maids.js
+import { v2 as cloudinary } from "cloudinary";
+import streamifier from "streamifier"; // npm install streamifier
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
 export const listMaids = async (req, res) => {
   const {
     location,
@@ -163,52 +173,50 @@ export const getMaidReviews = async (req, res) => {
 
 // Add this function to src/controllers/maids.controller.js
 
-import path from "path";
-import fs from "fs";
-
-// Avatar upload handler
 export const uploadAvatar = async (req, res) => {
   try {
-    // Check if file was uploaded
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const userId = req.user.id;
-    const file = req.file;
+    // Upload buffer directly to Cloudinary via stream
+    const uploadResult = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder: "izimaid/avatars",
+          public_id: `user_${req.user.id}`, // overwrites previous avatar
+          overwrite: true,
+          transformation: [
+            { width: 400, height: 400, crop: "fill", gravity: "face" },
+            { quality: "auto", fetch_format: "auto" },
+          ],
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        },
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(stream);
+    });
 
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = path.join(process.cwd(), "uploads", "avatars");
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
+    // Cloudinary returns a full HTTPS URL — store it directly
+    const avatar_url = uploadResult.secure_url;
 
-    // Generate unique filename
-    const filename = `${userId}_${Date.now()}${path.extname(file.originalname)}`;
-    const filepath = path.join(uploadsDir, filename);
-
-    // Save file
-    fs.writeFileSync(filepath, file.buffer);
-
-    // Generate avatar URL
-    const avatar_url = `/uploads/avatars/${filename}`;
-
-    // Update user avatar in database
     const { rows } = await req.db.query(
       `UPDATE users SET avatar = $1 WHERE id = $2 RETURNING id, avatar`,
-      [avatar_url, userId],
+      [avatar_url, req.user.id],
     );
 
     if (!rows.length) {
-      return res.status(404).json({ error: "user not found" });
+      return res.status(404).json({ error: "User not found" });
     }
 
     return res.json({
       message: "Avatar uploaded successfully",
-      avatar_url: rows[0].avatar,
+      avatar_url: rows[0].avatar, // full https://res.cloudinary.com/... URL
     });
   } catch (err) {
-    console.error("[maids.controller/uploadAvatar]", err);
+    console.error("[uploadAvatar]", err);
     return res.status(500).json({ error: "Failed to upload avatar" });
   }
 };

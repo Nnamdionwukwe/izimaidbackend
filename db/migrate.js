@@ -1,93 +1,91 @@
 #!/usr/bin/env node
 
-// scripts/test-avatar-upload.js
-// Usage: node scripts/test-avatar-upload.js <token> <image-path>
-// Example: node scripts/test-avatar-upload.js "your_bearer_token" "./test-image.jpg"
+// scripts/cleanup-avatars.js
+// Usage: node scripts/cleanup-avatars.js [--dry-run]
+// Removes orphaned avatar files (files not referenced in database)
 
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import pool from "../src/config/database.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const API_URL = process.env.API_URL || "http://localhost:8080";
+async function cleanupAvatars() {
+  const dryRun = process.argv.includes("--dry-run");
 
-async function testAvatarUpload() {
-  const [, , token, imagePath] = process.argv;
+  console.log("🧹 Cleaning up avatar files...\n");
 
-  if (!token || !imagePath) {
-    console.log(
-      "❌ Usage: node scripts/test-avatar-upload.js <token> <image-path>",
-    );
-    console.log(
-      "   Example: node scripts/test-avatar-upload.js 'eyJhbGc...' './photo.jpg'",
-    );
-    process.exit(1);
+  if (dryRun) {
+    console.log("📋 DRY RUN MODE - No files will be deleted\n");
   }
 
   try {
-    console.log("🧪 Testing avatar upload...\n");
-    console.log(`📍 API URL: ${API_URL}`);
-    console.log(`📸 Image: ${imagePath}`);
-    console.log(`🔑 Token: ${token.substring(0, 20)}...\n`);
+    // Get all avatar files
+    const uploadsDir = path.join(process.cwd(), "uploads", "avatars");
 
-    // Check if file exists
-    if (!fs.existsSync(imagePath)) {
-      console.error(`❌ File not found: ${imagePath}`);
-      process.exit(1);
+    if (!fs.existsSync(uploadsDir)) {
+      console.log("ℹ️  No uploads directory found");
+      process.exit(0);
     }
 
-    // Check file size
-    const stats = fs.statSync(imagePath);
-    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+    const files = fs.readdirSync(uploadsDir);
+    console.log(`📁 Found ${files.length} avatar file(s)\n`);
 
-    if (stats.size > 5 * 1024 * 1024) {
-      console.error(`❌ File too large: ${fileSizeMB}MB (max 5MB)`);
-      process.exit(1);
+    if (files.length === 0) {
+      console.log("✅ No avatars to clean up");
+      process.exit(0);
     }
 
-    console.log(`✅ File size: ${fileSizeMB}MB`);
+    // Get all avatar URLs from database
+    const result = await pool.query(`
+      SELECT id, avatar FROM users WHERE avatar IS NOT NULL
+    `);
 
-    // Read file
-    const fileBuffer = fs.readFileSync(imagePath);
-    const fileName = path.basename(imagePath);
+    const referencedAvatars = new Set(
+      result.rows.map((row) => row.avatar.split("/").pop()),
+    );
 
-    // Create FormData
-    const FormData = (await import("form-data")).default;
-    const form = new FormData();
-    form.append("avatar", fileBuffer, fileName);
+    console.log(`📊 Database has ${result.rows.length} avatar reference(s)\n`);
 
-    console.log(`📤 Uploading to ${API_URL}/api/maids/avatar\n`);
+    // Find orphaned files
+    const orphaned = files.filter((file) => !referencedAvatars.has(file));
 
-    // Upload
-    const response = await fetch(`${API_URL}/api/maids/avatar`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...form.getHeaders(),
-      },
-      body: form,
-    });
+    if (orphaned.length === 0) {
+      console.log("✅ No orphaned avatars found");
+      process.exit(0);
+    }
 
-    const data = await response.json();
+    console.log(`🗑️  Found ${orphaned.length} orphaned file(s):\n`);
 
-    if (response.ok) {
-      console.log("✅ Upload successful!\n");
-      console.log("📋 Response:");
-      console.log(JSON.stringify(data, null, 2));
-      console.log(`\n📸 Avatar URL: ${data.avatar_url}`);
-      console.log(`🔗 Access at: ${API_URL}${data.avatar_url}`);
+    let deletedCount = 0;
+
+    for (const file of orphaned) {
+      const filepath = path.join(uploadsDir, file);
+      const stats = fs.statSync(filepath);
+      const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+
+      console.log(`   - ${file} (${sizeMB}MB)`);
+
+      if (!dryRun) {
+        fs.unlinkSync(filepath);
+        deletedCount++;
+      }
+    }
+
+    if (dryRun) {
+      console.log(`\n📋 Would delete ${orphaned.length} file(s)`);
+      console.log("Run without --dry-run to actually delete files");
     } else {
-      console.error("❌ Upload failed!\n");
-      console.error("📋 Error Response:");
-      console.error(JSON.stringify(data, null, 2));
-      process.exit(1);
+      console.log(`\n✅ Deleted ${deletedCount} orphaned file(s)`);
     }
+
+    process.exit(0);
   } catch (error) {
     console.error("❌ Error:", error.message);
     process.exit(1);
   }
 }
 
-testAvatarUpload();
+cleanupAvatars();
