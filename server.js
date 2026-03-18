@@ -12,6 +12,8 @@ import bookingsRoutes from "./src/routes/bookings.js";
 import paymentsRoutes from "./src/routes/payments.js";
 import adminRoutes from "./src/routes/admin.js";
 import leadsRoutes from "./src/routes/leads.js";
+import customerSupportRoutes from "./src/routes/customer-support.js";
+import maidSupportRoutes from "./src/routes/maid-support.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,6 +64,8 @@ app.use("/api/bookings", bookingsRoutes);
 app.use("/api/payments", paymentsRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/leads", leadsRoutes);
+app.use("/api/customer-support", customerSupportRoutes); // ← ADD THIS LINE
+app.use("/api/maid-support", maidSupportRoutes); // ← ADD THIS LINE
 
 app.get("/health", async (_req, res) => {
   const status = { postgres: "ok", redis: "ok" };
