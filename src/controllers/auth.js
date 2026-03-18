@@ -34,6 +34,8 @@ function signToken(user) {
   }
 }
 
+// auth.controller.js - FIXED googleLogin function
+
 export const googleLogin = async (req, res) => {
   console.log("\n📱 [GOOGLE LOGIN] Starting Google login...");
 
@@ -92,37 +94,38 @@ export const googleLogin = async (req, res) => {
     let isNewUser = false;
 
     if (existingRows.length > 0) {
-      // ── User exists - DON'T change role, just update name/avatar ────────
+      // ── User exists - preserve avatar, only update name ────────────────
       const existingUser = existingRows[0];
       console.log(
         "👤 [DB] User exists:",
         existingUser.id,
-        "| Existing role:",
-        existingUser.role,
+        "| Existing avatar:",
+        existingUser.avatar ? "✅ Custom" : "❌ None",
       );
 
       const { rows: updatedRows } = await req.db.query(
         `UPDATE users 
-         SET name = $1, avatar = $2, is_active = true, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3
+         SET name = $1, is_active = true, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2
          RETURNING *`,
-        [name, avatar, existingUser.id],
+        [name, existingUser.id],
+        // ✅ NO avatar update - preserves custom uploaded avatar!
       );
       user = updatedRows[0];
       console.log(
-        "✅ [DB] User updated (role preserved):",
+        "✅ [DB] User updated (avatar preserved):",
         user.email,
         "| Role:",
         user.role,
       );
     } else {
-      // ── New user - set role based on their selection ────────────────────
+      // ── New user - set role based on their selection + use Google avatar ────────────────
       console.log("🆕 [DB] New user. Creating with role:", role);
       const { rows: insertedRows } = await req.db.query(
         `INSERT INTO users (email, name, avatar, google_id, role, is_active)
          VALUES ($1, $2, $3, $4, $5, true)
          RETURNING *`,
-        [email, name, avatar, google_id, role],
+        [email, name, avatar, google_id, role], // ✅ Google avatar on first login
       );
       user = insertedRows[0];
       isNewUser = true;
@@ -131,6 +134,7 @@ export const googleLogin = async (req, res) => {
         user.email,
         "| Role:",
         user.role,
+        "| Avatar: Google",
       );
     }
 
@@ -174,6 +178,7 @@ export const googleLogin = async (req, res) => {
       id: user.id,
       email: user.email,
       role: user.role,
+      avatarPreserved: !isNewUser,
       isNewUser,
     });
     console.log("🔐 Token preview:", token.slice(0, 50) + "...\n");
