@@ -1,4 +1,9 @@
 import db from "../config/database.js";
+import {
+  uploadMediaToCloudinary,
+  deleteMediaFromCloudinary,
+  validateMediaFile,
+} from "../utils/cloudinary-utils.js";
 
 // Create a new maid support ticket
 export async function createMaidSupportTicket(req, res) {
@@ -145,13 +150,145 @@ export async function getMaidSupportTicket(req, res) {
       [id],
     );
 
+    // Get attachments
+    const attachmentsResult = await db.query(
+      `SELECT * FROM support_ticket_attachments WHERE ticket_id = $1 AND ticket_type = 'maid' ORDER BY created_at DESC`,
+      [id],
+    );
+
     res.json({
       ticket,
       replies: repliesResult.rows,
+      attachments: attachmentsResult.rows,
     });
   } catch (err) {
     console.error("Error fetching maid support ticket:", err);
     res.status(500).json({ error: "Failed to fetch support ticket" });
+  }
+}
+
+// Upload media attachment to maid support ticket
+export async function uploadMaidTicketMedia(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: "No file provided" });
+    }
+
+    // Determine media type from file
+    const isVideo = file.mimetype.startsWith("video/");
+    const mediaType = isVideo ? "video" : "image";
+
+    // Validate file
+    const validation = validateMediaFile(file, mediaType);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    // Check if ticket exists and user has access
+    const ticketResult = await db.query(
+      `SELECT * FROM maid_support_tickets WHERE id = $1`,
+      [id],
+    );
+
+    if (ticketResult.rows.length === 0) {
+      return res.status(404).json({ error: "Support ticket not found" });
+    }
+
+    const ticket = ticketResult.rows[0];
+
+    if (userRole !== "admin" && ticket.user_id !== userId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Upload to Cloudinary
+    const uploadResult = await uploadMediaToCloudinary(
+      file.buffer,
+      mediaType,
+      `support-tickets/maid/${id}`,
+    );
+
+    // Save attachment to database
+    const attachmentResult = await db.query(
+      `INSERT INTO support_ticket_attachments 
+        (ticket_id, ticket_type, user_id, media_url, media_type, file_name, file_size, created_at)
+       VALUES ($1, 'maid', $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [
+        id,
+        userId,
+        uploadResult.url,
+        mediaType,
+        file.originalname,
+        uploadResult.size,
+      ],
+    );
+
+    // Update attachment count
+    await db.query(
+      `UPDATE maid_support_tickets SET attachment_count = attachment_count + 1 WHERE id = $1`,
+      [id],
+    );
+
+    res.status(201).json({
+      message: "Media uploaded successfully",
+      attachment: attachmentResult.rows[0],
+    });
+  } catch (err) {
+    console.error("Error uploading maid ticket media:", err);
+    res.status(500).json({ error: "Failed to upload media" });
+  }
+}
+
+// Delete media attachment from maid support ticket
+export async function deleteMaidTicketMedia(req, res) {
+  try {
+    const { ticketId, attachmentId } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    // Get attachment
+    const attachmentResult = await db.query(
+      `SELECT * FROM support_ticket_attachments WHERE id = $1 AND ticket_id = $2`,
+      [attachmentId, ticketId],
+    );
+
+    if (attachmentResult.rows.length === 0) {
+      return res.status(404).json({ error: "Attachment not found" });
+    }
+
+    const attachment = attachmentResult.rows[0];
+
+    // Check authorization
+    if (userRole !== "admin" && attachment.user_id !== userId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Delete from Cloudinary
+    const publicId = attachment.media_url.split("/").pop().split(".")[0];
+    await deleteMediaFromCloudinary(publicId, attachment.media_type);
+
+    // Delete from database
+    await db.query(`DELETE FROM support_ticket_attachments WHERE id = $1`, [
+      attachmentId,
+    ]);
+
+    // Update attachment count
+    await db.query(
+      `UPDATE maid_support_tickets SET attachment_count = GREATEST(0, attachment_count - 1) WHERE id = $1`,
+      [ticketId],
+    );
+
+    res.json({
+      message: "Media deleted successfully",
+    });
+  } catch (err) {
+    console.error("Error deleting maid ticket media:", err);
+    res.status(500).json({ error: "Failed to delete media" });
   }
 }
 
@@ -269,10 +406,31 @@ export async function deleteMaidSupportTicket(req, res) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
+    // Get all attachments and delete from Cloudinary
+    const attachmentsResult = await db.query(
+      `SELECT * FROM support_ticket_attachments WHERE ticket_id = $1`,
+      [id],
+    );
+
+    for (const attachment of attachmentsResult.rows) {
+      const publicId = attachment.media_url.split("/").pop().split(".")[0];
+      try {
+        await deleteMediaFromCloudinary(publicId, attachment.media_type);
+      } catch (err) {
+        console.error("Error deleting media from Cloudinary:", err);
+      }
+    }
+
     // Delete replies first (foreign key constraint)
     await db.query(`DELETE FROM maid_support_replies WHERE ticket_id = $1`, [
       id,
     ]);
+
+    // Delete attachments
+    await db.query(
+      `DELETE FROM support_ticket_attachments WHERE ticket_id = $1`,
+      [id],
+    );
 
     // Delete ticket
     const result = await db.query(
