@@ -402,11 +402,9 @@ export async function deleteMessage(req, res) {
       const ageMinutes =
         (Date.now() - new Date(msg.created_at).getTime()) / 60000;
       if (ageMinutes > 5) {
-        return res
-          .status(403)
-          .json({
-            error: "Messages can only be deleted within 5 minutes of sending",
-          });
+        return res.status(403).json({
+          error: "Messages can only be deleted within 5 minutes of sending",
+        });
       }
     }
 
@@ -496,11 +494,85 @@ export async function adminGetAllConversations(req, res) {
 }
 
 // ─── ADMIN ONLY: Read a single conversation's messages (view-only) ───
+
+export async function adminGetAllConversations(req, res) {
+  try {
+    const { page = 1, limit = 20, search = "" } = req.query;
+    const offset = (page - 1) * limit;
+    const q = search.trim();
+
+    // Build params — $1=limit, $2=offset, $3=search (optional)
+    const params = [Number(limit), Number(offset)];
+    const searchClause = q
+      ? `WHERE (cu.name ILIKE $3 OR mu.name ILIKE $3 OR b.id::text ILIKE $3)`
+      : "";
+    if (q) params.push(`%${q}%`);
+
+    const result = await db.query(
+      `SELECT
+         c.id,
+         c.booking_id,
+         c.created_at,
+         c.updated_at,
+         b.service_date,
+         b.status          AS booking_status,
+         cu.id             AS customer_id,
+         cu.name           AS customer_name,
+         cu.avatar         AS customer_avatar,
+         mu.id             AS maid_id,
+         mu.name           AS maid_name,
+         mu.avatar         AS maid_avatar,
+         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id)::int
+                           AS message_count,
+         (SELECT content    FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+                           AS last_message,
+         (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+                           AS last_message_at
+       FROM conversations c
+       JOIN bookings b ON b.id = c.booking_id
+       JOIN users cu   ON cu.id = c.customer_id
+       JOIN users mu   ON mu.id = c.maid_id
+       ${searchClause}
+       ORDER BY c.updated_at DESC
+       LIMIT $1 OFFSET $2`,
+      params,
+    );
+
+    // Count query
+    const countParams = q ? [`%${q}%`] : [];
+    const countWhere = q
+      ? `WHERE (cu.name ILIKE $1 OR mu.name ILIKE $1 OR b.id::text ILIKE $1)`
+      : "";
+
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM conversations c
+       JOIN bookings b ON b.id = c.booking_id
+       JOIN users cu   ON cu.id = c.customer_id
+       JOIN users mu   ON mu.id = c.maid_id
+       ${countWhere}`,
+      countParams,
+    );
+
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    res.json({
+      conversations: result.rows,
+      total,
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      pages: Math.ceil(total / limit),
+    });
+  } catch (err) {
+    console.error("Error fetching all conversations (admin):", err);
+    res.status(500).json({ error: "Failed to fetch conversations" });
+  }
+}
+
+// ─── ADMIN ONLY: Read a single conversation's messages (view-only) ───
 export async function adminGetConversation(req, res) {
   try {
     const { conversationId } = req.params;
 
-    // Fetch conversation with participant details
     const convResult = await db.query(
       `SELECT
          c.*,
@@ -529,7 +601,6 @@ export async function adminGetConversation(req, res) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Fetch all messages with sender info — admin sees everything
     const messagesResult = await db.query(
       `SELECT
          m.*,
@@ -543,13 +614,11 @@ export async function adminGetConversation(req, res) {
       [conversationId],
     );
 
-    // NOTE: Admin viewing does NOT mark messages as read and does NOT
+    // Admin viewing does NOT mark messages as read and does NOT
     // affect unread counters for the customer or maid.
-
     res.json({
       conversation: convResult.rows[0],
       messages: messagesResult.rows,
-      // Remind callers this is a read-only admin view
       admin_view: true,
     });
   } catch (err) {
