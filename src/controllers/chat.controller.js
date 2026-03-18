@@ -64,7 +64,7 @@ export async function getOrCreateConversation(req, res) {
 
     // Fetch messages
     const messagesResult = await db.query(
-      `SELECT m.*, u.name AS sender_name, u.role AS sender_role
+      `SELECT m.*, u.name AS sender_name, u.role AS sender_role, u.avatar AS sender_avatar
        FROM messages m
        JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = $1
@@ -104,6 +104,8 @@ export async function sendMessage(req, res) {
     if (!content?.trim()) {
       return res.status(400).json({ error: "Message content is required" });
     }
+    // Trim safely
+    const trimmedContent = content.trim();
 
     // Verify the conversation exists and user is a participant
     const convResult = await db.query(
@@ -131,7 +133,7 @@ export async function sendMessage(req, res) {
          (conversation_id, sender_id, content, message_type, is_read, created_at)
        VALUES ($1, $2, $3, 'text', false, CURRENT_TIMESTAMP)
        RETURNING *`,
-      [conversationId, userId, content.trim()],
+      [conversationId, userId, trimmedContent],
     );
 
     const message = messageResult.rows[0];
@@ -215,7 +217,7 @@ export async function sendMediaMessage(req, res) {
       [
         conversationId,
         userId,
-        file.originalname,
+        file.originalname || null, // caption/filename — nullable
         uploadResult.url,
         mediaType,
         mediaType, // message_type = 'image' or 'video'

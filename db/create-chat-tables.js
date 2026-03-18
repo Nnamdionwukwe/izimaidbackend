@@ -30,24 +30,43 @@ async function run() {
         unread_customer  INTEGER NOT NULL DEFAULT 0,
         unread_maid      INTEGER NOT NULL DEFAULT 0,
         created_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(booking_id)
+        updated_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
     console.log("✓ conversations");
 
+    // Add UNIQUE constraint on booking_id only if it doesn't already exist
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'conversations_booking_id_key'
+        ) THEN
+          ALTER TABLE conversations ADD CONSTRAINT conversations_booking_id_key UNIQUE (booking_id);
+        END IF;
+      END$$;
+    `);
+    console.log("✓ conversations unique constraint");
+
     // 2. Messages table
+    //    content is nullable — media-only messages have no text
     await client.query(`
       CREATE TABLE IF NOT EXISTS messages (
         id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         conversation_id  UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
         sender_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        content          TEXT NOT NULL,
-        message_type     VARCHAR(10) NOT NULL DEFAULT 'text',  -- 'text' | 'image' | 'video'
+        content          TEXT,                                        -- nullable: media messages may have no caption
+        message_type     VARCHAR(10) NOT NULL DEFAULT 'text',         -- 'text' | 'image' | 'video'
         media_url        TEXT,
-        media_type       VARCHAR(10),                          -- 'image' | 'video'
+        media_type       VARCHAR(10),                                 -- 'image' | 'video'
         is_read          BOOLEAN NOT NULL DEFAULT false,
-        created_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        created_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        -- enforce: text messages must have content, media messages must have media_url
+        CONSTRAINT chk_message_content CHECK (
+          (message_type = 'text'  AND content   IS NOT NULL) OR
+          (message_type != 'text' AND media_url IS NOT NULL)
+        )
       )
     `);
     console.log("✓ messages");
@@ -81,6 +100,18 @@ async function run() {
 
     await client.query("COMMIT");
     console.log("\n✅ Chat tables created successfully");
+
+    // Quick verification
+    const check = await client.query(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name IN ('conversations', 'messages')
+      ORDER BY table_name
+    `);
+    console.log(
+      "✓ Tables confirmed:",
+      check.rows.map((r) => r.table_name).join(", "),
+    );
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("\n❌ Migration failed:", err.message);
