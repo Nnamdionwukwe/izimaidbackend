@@ -23,34 +23,11 @@ export async function getOrCreateConversation(req, res) {
 
     const raw = rawBooking.rows[0];
 
-    // ── Step 2: resolve the maid's user_id ──────────────────────────
-    // bookings.maid_id might be:
-    //   (a) a users.id directly  — common when maid is stored as user
-    //   (b) a maid_profiles.id   — requires a join to get the user_id
-    // We try to find a user with that id first; if not found, treat it
-    // as a maid_profiles id and look up the real user_id.
-    let maidUserId = raw.maid_id;
-
-    const userCheck = await db.query(`SELECT id FROM users WHERE id = $1`, [
-      raw.maid_id,
-    ]);
-
-    if (userCheck.rows.length === 0) {
-      // maid_id is a maid_profiles.id — look up the user_id
-      const profileCheck = await db.query(
-        `SELECT user_id FROM maid_profiles WHERE id = $1`,
-        [raw.maid_id],
-      );
-      if (profileCheck.rows.length === 0) {
-        return res
-          .status(500)
-          .json({ error: "Cannot resolve maid user ID for this booking" });
-      }
-      maidUserId = profileCheck.rows[0].user_id;
-    }
-
-    const customerId = raw.user_id;
-
+    // ── Step 2: both IDs are direct user IDs (confirmed from booking controller) ──
+    // bookings.customer_id = users.id  (the customer)
+    // bookings.maid_id     = users.id  (the maid's user account)
+    const customerId = raw.customer_id;
+    const maidUserId = raw.maid_id;
     // ── Step 3: auth check ────────────────────────────────────────────
     if (
       userRole !== "admin" &&
