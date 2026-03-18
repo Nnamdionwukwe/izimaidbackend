@@ -23,11 +23,34 @@ export async function getOrCreateConversation(req, res) {
 
     const raw = rawBooking.rows[0];
 
-    // ── Step 2: both IDs are direct user IDs (confirmed from booking controller) ──
-    // bookings.customer_id = users.id  (the customer)
-    // bookings.maid_id     = users.id  (the maid's user account)
-    const customerId = raw.customer_id;
-    const maidUserId = raw.maid_id;
+    // ── Step 2: resolve the maid's user_id ──────────────────────────
+    // bookings.maid_id might be:
+    //   (a) a users.id directly  — common when maid is stored as user
+    //   (b) a maid_profiles.id   — requires a join to get the user_id
+    // We try to find a user with that id first; if not found, treat it
+    // as a maid_profiles id and look up the real user_id.
+    let maidUserId = raw.maid_id;
+
+    const userCheck = await db.query(`SELECT id FROM users WHERE id = $1`, [
+      raw.maid_id,
+    ]);
+
+    if (userCheck.rows.length === 0) {
+      // maid_id is a maid_profiles.id — look up the user_id
+      const profileCheck = await db.query(
+        `SELECT user_id FROM maid_profiles WHERE id = $1`,
+        [raw.maid_id],
+      );
+      if (profileCheck.rows.length === 0) {
+        return res
+          .status(500)
+          .json({ error: "Cannot resolve maid user ID for this booking" });
+      }
+      maidUserId = profileCheck.rows[0].user_id;
+    }
+
+    const customerId = raw.user_id;
+
     // ── Step 3: auth check ────────────────────────────────────────────
     if (
       userRole !== "admin" &&
@@ -426,74 +449,6 @@ export async function deleteMessage(req, res) {
     res.status(500).json({ error: "Failed to delete message" });
   }
 }
-
-// ─── ADMIN ONLY: List all conversations (read-only view) ─────────────
-export async function adminGetAllConversations(req, res) {
-  try {
-    const { page = 1, limit = 20, search = "" } = req.query;
-    const offset = (page - 1) * limit;
-
-    const searchClause = search.trim()
-      ? `AND (cu.name ILIKE $3 OR mu.name ILIKE $3 OR b.id::text ILIKE $3)`
-      : "";
-    const params = search.trim()
-      ? [limit, offset, `%${search.trim()}%`]
-      : [limit, offset];
-
-    const result = await db.query(
-      `SELECT
-         c.id,
-         c.booking_id,
-         c.created_at,
-         c.updated_at,
-         b.service_date,
-         b.status          AS booking_status,
-         cu.id             AS customer_id,
-         cu.name           AS customer_name,
-         cu.avatar         AS customer_avatar,
-         mu.id             AS maid_id,
-         mu.name           AS maid_name,
-         mu.avatar         AS maid_avatar,
-         (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id)::int
-                           AS message_count,
-         (SELECT content   FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
-                           AS last_message,
-         (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
-                           AS last_message_at
-       FROM conversations c
-       JOIN bookings b ON b.id = c.booking_id
-       JOIN users cu   ON cu.id = c.customer_id
-       JOIN users mu   ON mu.id = c.maid_id
-       ${searchClause}
-       ORDER BY c.updated_at DESC
-       LIMIT $1 OFFSET $2`,
-      params,
-    );
-
-    // Total count for pagination
-    const countParams = search.trim() ? [`%${search.trim()}%`] : [];
-    const countClause = search.trim()
-      ? `JOIN users cu ON cu.id = c.customer_id JOIN users mu ON mu.id = c.maid_id WHERE (cu.name ILIKE $1 OR mu.name ILIKE $1)`
-      : "";
-    const countResult = await db.query(
-      `SELECT COUNT(*) FROM conversations c ${countClause}`,
-      countParams,
-    );
-
-    res.json({
-      conversations: result.rows,
-      total: parseInt(countResult.rows[0].count, 10),
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      pages: Math.ceil(parseInt(countResult.rows[0].count, 10) / limit),
-    });
-  } catch (err) {
-    console.error("Error fetching all conversations (admin):", err);
-    res.status(500).json({ error: "Failed to fetch conversations" });
-  }
-}
-
-// ─── ADMIN ONLY: Read a single conversation's messages (view-only) ───
 
 export async function adminGetAllConversations(req, res) {
   try {
