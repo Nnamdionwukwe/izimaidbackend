@@ -42,6 +42,7 @@ export async function createMaidSupportTicket(req, res) {
 }
 
 // Get maid support tickets
+
 export async function getMaidSupportTickets(req, res) {
   try {
     const userId = req.user.id;
@@ -49,58 +50,63 @@ export async function getMaidSupportTickets(req, res) {
     const { page = 1, limit = 10, status, category, sort = "desc" } = req.query;
 
     const offset = (page - 1) * limit;
-    let query = `SELECT * FROM maid_support_tickets`;
+
+    let query = `
+      SELECT t.*,
+        (SELECT COUNT(*) FROM maid_support_replies r WHERE r.ticket_id = t.id)::int AS reply_count
+      FROM maid_support_tickets t
+    `;
     const params = [];
 
     // Maids see only their tickets, admins see all
     if (userRole !== "admin") {
-      query += ` WHERE user_id = $1`;
+      query += ` WHERE t.user_id = $1`;
       params.push(userId);
     }
 
-    // Filter by status if provided
+    // Filter by status
     if (status) {
       if (userRole !== "admin") {
-        query += ` AND status = $${params.length + 1}`;
+        query += ` AND t.status = $${params.length + 1}`;
       } else {
-        query += ` WHERE status = $${params.length + 1}`;
+        query += ` WHERE t.status = $${params.length + 1}`;
       }
       params.push(status);
     }
 
-    // Filter by category if provided
+    // Filter by category
     if (category) {
-      query += ` AND category = $${params.length + 1}`;
+      query += ` AND t.category = $${params.length + 1}`;
       params.push(category);
     }
 
-    // Sort by created_at
+    // Sort + paginate
     const sortOrder = sort === "asc" ? "ASC" : "DESC";
-    query += ` ORDER BY created_at ${sortOrder} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    query += ` ORDER BY t.created_at ${sortOrder} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
     const result = await db.query(query, params);
 
-    // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) FROM maid_support_tickets`;
+    // Count query (unchanged logic, just uses alias t)
+    let countQuery = `SELECT COUNT(*) FROM maid_support_tickets t`;
     const countParams = [];
 
     if (userRole !== "admin") {
-      countQuery += ` WHERE user_id = $1`;
+      countQuery += ` WHERE t.user_id = $1`;
       countParams.push(userId);
     }
 
     if (status) {
       if (userRole !== "admin") {
-        countQuery += ` AND status = $${countParams.length + 1}`;
+        countQuery += ` AND t.status = $${countParams.length + 1}`;
       } else {
-        countQuery += ` WHERE status = $${countParams.length + 1}`;
+        countQuery += ` WHERE t.status = $${countParams.length + 1}`;
       }
       countParams.push(status);
     }
 
     if (category) {
-      countQuery += ` AND category = $${countParams.length + 1}`;
+      countQuery += ` AND t.category = $${countParams.length + 1}`;
       countParams.push(category);
     }
 
@@ -108,7 +114,7 @@ export async function getMaidSupportTickets(req, res) {
     const total = parseInt(countResult.rows[0].count, 10);
 
     res.json({
-      tickets: result.rows,
+      tickets: result.rows, // each ticket now has reply_count ✅
       total,
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
