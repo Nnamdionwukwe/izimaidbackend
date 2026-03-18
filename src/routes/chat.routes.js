@@ -39,12 +39,12 @@ const upload = multer({
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-//  ADMIN-ONLY ROUTES  (read-only — admin cannot send or delete messages)
+//  ADMIN-ONLY ROUTES
+//  These must come before /:conversationId so Express doesn't swallow
+//  the literal segment "admin" as a conversationId value.
 // ═══════════════════════════════════════════════════════════════════════
 
 // GET /api/chat/admin
-//   List all conversations across all users, with search + pagination
-//   Query params: ?page=1&limit=20&search=name_or_bookingId
 router.get(
   "/admin",
   requireAuth,
@@ -53,8 +53,6 @@ router.get(
 );
 
 // GET /api/chat/admin/:conversationId
-//   Read a single conversation with full message history
-//   Admin view — does NOT affect unread counters for customer or maid
 router.get(
   "/admin/:conversationId",
   requireAuth,
@@ -63,27 +61,32 @@ router.get(
 );
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CUSTOMER & MAID ROUTES
+//  STATIC-SEGMENT ROUTES
+//  Must come before /:conversationId — otherwise Express treats the
+//  literal word "unread", "booking", or "messages" as a conversationId.
 // ═══════════════════════════════════════════════════════════════════════
 
 // GET /api/chat
-//   Inbox — all conversations for the logged-in user
 router.get("/", requireAuth, getMyConversations);
 
-// GET /api/chat/unread
-//   Total unread message count (for nav badge)
+// GET /api/chat/unread  ← must be above /:conversationId
 router.get("/unread", requireAuth, getUnreadCount);
 
-// GET /api/chat/booking/:bookingId
-//   Get or create the conversation for a booking, plus all messages
+// GET /api/chat/booking/:bookingId  ← must be above /:conversationId
 router.get("/booking/:bookingId", requireAuth, getOrCreateConversation);
 
+// DELETE /api/chat/messages/:messageId  ← must be above /:conversationId
+router.delete("/messages/:messageId", requireAuth, deleteMessage);
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PARAM ROUTES  (/:conversationId)
+//  These come last so static segments above are never shadowed.
+// ═══════════════════════════════════════════════════════════════════════
+
 // POST /api/chat/:conversationId/messages
-//   Send a text message
 router.post("/:conversationId/messages", requireAuth, sendMessage);
 
 // POST /api/chat/:conversationId/messages/media
-//   Send an image or video
 router.post(
   "/:conversationId/messages/media",
   requireAuth,
@@ -92,11 +95,6 @@ router.post(
 );
 
 // PATCH /api/chat/:conversationId/read
-//   Mark all incoming messages in this conversation as read
 router.patch("/:conversationId/read", requireAuth, markMessagesRead);
-
-// DELETE /api/chat/messages/:messageId
-//   Delete own message (within 5 minutes of sending)
-router.delete("/messages/:messageId", requireAuth, deleteMessage);
 
 export default router;
