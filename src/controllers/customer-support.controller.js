@@ -42,85 +42,7 @@ export async function createCustomerSupportTicket(req, res) {
 }
 
 // Get customer support tickets
-export async function getCustomerSupportTickets(req, res) {
-  try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const { page = 1, limit = 10, status, category, sort = "desc" } = req.query;
 
-    const offset = (page - 1) * limit;
-    let query = `SELECT * FROM customer_support_tickets`;
-    const params = [];
-
-    // Users see only their tickets, admins see all
-    if (userRole !== "admin") {
-      query += ` WHERE user_id = $1`;
-      params.push(userId);
-    }
-
-    // Filter by status if provided
-    if (status) {
-      if (userRole !== "admin") {
-        query += ` AND status = $${params.length + 1}`;
-      } else {
-        query += ` WHERE status = $${params.length + 1}`;
-      }
-      params.push(status);
-    }
-
-    // Filter by category if provided
-    if (category) {
-      query += ` AND category = $${params.length + 1}`;
-      params.push(category);
-    }
-
-    // Sort by created_at
-    const sortOrder = sort === "asc" ? "ASC" : "DESC";
-    query += ` ORDER BY created_at ${sortOrder} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-    params.push(limit, offset);
-
-    const result = await db.query(query, params);
-
-    // Get total count for pagination
-    let countQuery = `SELECT COUNT(*) FROM customer_support_tickets`;
-    const countParams = [];
-
-    if (userRole !== "admin") {
-      countQuery += ` WHERE user_id = $1`;
-      countParams.push(userId);
-    }
-
-    if (status) {
-      if (userRole !== "admin") {
-        countQuery += ` AND status = $${countParams.length + 1}`;
-      } else {
-        countQuery += ` WHERE status = $${countParams.length + 1}`;
-      }
-      countParams.push(status);
-    }
-
-    if (category) {
-      countQuery += ` AND category = $${countParams.length + 1}`;
-      countParams.push(category);
-    }
-
-    const countResult = await db.query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].count, 10);
-
-    res.json({
-      tickets: result.rows,
-      total,
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      pages: Math.ceil(total / limit),
-    });
-  } catch (err) {
-    console.error("Error fetching customer support tickets:", err);
-    res.status(500).json({ error: "Failed to fetch support tickets" });
-  }
-}
-
-// Get single customer support ticket with replies
 export async function getCustomerSupportTickets(req, res) {
   try {
     const userId = req.user.id;
@@ -190,6 +112,53 @@ export async function getCustomerSupportTickets(req, res) {
   } catch (err) {
     console.error("Error fetching customer support tickets:", err);
     res.status(500).json({ error: "Failed to fetch support tickets" });
+  }
+}
+
+// Get single customer support ticket with replies
+export async function getCustomerSupportTicket(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    // Get ticket
+    const ticketResult = await db.query(
+      `SELECT * FROM customer_support_tickets WHERE id = $1`,
+      [id],
+    );
+
+    if (ticketResult.rows.length === 0) {
+      return res.status(404).json({ error: "Support ticket not found" });
+    }
+
+    const ticket = ticketResult.rows[0];
+
+    // Check authorization
+    if (userRole !== "admin" && ticket.user_id !== userId) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Get replies
+    const repliesResult = await db.query(
+      `SELECT * FROM customer_support_replies WHERE ticket_id = $1 ORDER BY created_at ASC`,
+      [id],
+    );
+
+    // Get attachments
+    const attachmentsResult = await db.query(
+      `SELECT * FROM support_ticket_attachments WHERE ticket_id = $1 AND ticket_type = 'customer' ORDER BY created_at DESC`,
+      [id],
+    );
+
+    res.json({
+      ticket,
+      replies: repliesResult.rows,
+      attachments: attachmentsResult.rows,
+    });
+  } catch (err) {
+    console.error("Error fetching customer support ticket:", err);
+    res.status(500).json({ error: "Failed to fetch support ticket" });
   }
 }
 
