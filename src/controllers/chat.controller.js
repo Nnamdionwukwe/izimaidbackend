@@ -6,43 +6,61 @@ import {
 } from "../utils/cloudinary-utils.js";
 
 // ─── Get or create a conversation between customer and maid ──────────
-// A conversation is always tied to a booking so context is clear.
 export async function getOrCreateConversation(req, res) {
   try {
     const { bookingId } = req.params;
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    // Fetch the booking to get both participants.
-    // maid_id in bookings may point to maid_profiles.id, so we join to get the user_id.
-    // If that join fails (no maid_profiles row), we fall back to treating maid_id as a user_id directly.
-    const bookingResult = await db.query(
-      `SELECT
-         b.id,
-         b.user_id AS customer_id,
-         COALESCE(mp.user_id, b.maid_id) AS maid_id
-       FROM bookings b
-       LEFT JOIN maid_profiles mp ON mp.id = b.maid_id
-       WHERE b.id = $1`,
-      [bookingId],
-    );
+    // ── Step 1: fetch the raw booking row first ──────────────────────
+    const rawBooking = await db.query(`SELECT * FROM bookings WHERE id = $1`, [
+      bookingId,
+    ]);
 
-    if (bookingResult.rows.length === 0) {
+    if (rawBooking.rows.length === 0) {
       return res.status(404).json({ error: "Booking not found" });
     }
 
-    const booking = bookingResult.rows[0];
+    const raw = rawBooking.rows[0];
 
-    // Only the customer, maid, or admin can access this conversation
+    // ── Step 2: resolve the maid's user_id ──────────────────────────
+    // bookings.maid_id might be:
+    //   (a) a users.id directly  — common when maid is stored as user
+    //   (b) a maid_profiles.id   — requires a join to get the user_id
+    // We try to find a user with that id first; if not found, treat it
+    // as a maid_profiles id and look up the real user_id.
+    let maidUserId = raw.maid_id;
+
+    const userCheck = await db.query(`SELECT id FROM users WHERE id = $1`, [
+      raw.maid_id,
+    ]);
+
+    if (userCheck.rows.length === 0) {
+      // maid_id is a maid_profiles.id — look up the user_id
+      const profileCheck = await db.query(
+        `SELECT user_id FROM maid_profiles WHERE id = $1`,
+        [raw.maid_id],
+      );
+      if (profileCheck.rows.length === 0) {
+        return res
+          .status(500)
+          .json({ error: "Cannot resolve maid user ID for this booking" });
+      }
+      maidUserId = profileCheck.rows[0].user_id;
+    }
+
+    const customerId = raw.user_id;
+
+    // ── Step 3: auth check ────────────────────────────────────────────
     if (
       userRole !== "admin" &&
-      userId !== booking.customer_id &&
-      userId !== booking.maid_id
+      userId !== customerId &&
+      userId !== maidUserId
     ) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
-    // Check if conversation already exists
+    // ── Step 4: get or create conversation ───────────────────────────
     let convResult = await db.query(
       `SELECT * FROM conversations WHERE booking_id = $1`,
       [bookingId],
@@ -50,19 +68,19 @@ export async function getOrCreateConversation(req, res) {
 
     let conversation;
     if (convResult.rows.length === 0) {
-      // Create new conversation
       const newConv = await db.query(
-        `INSERT INTO conversations (booking_id, customer_id, maid_id, created_at, updated_at)
+        `INSERT INTO conversations
+           (booking_id, customer_id, maid_id, created_at, updated_at)
          VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          RETURNING *`,
-        [bookingId, booking.customer_id, booking.maid_id],
+        [bookingId, customerId, maidUserId],
       );
       conversation = newConv.rows[0];
     } else {
       conversation = convResult.rows[0];
     }
 
-    // Fetch messages
+    // ── Step 5: fetch messages ────────────────────────────────────────
     const messagesResult = await db.query(
       `SELECT m.*, u.name AS sender_name, u.role AS sender_role, u.avatar AS sender_avatar
        FROM messages m
@@ -72,10 +90,8 @@ export async function getOrCreateConversation(req, res) {
       [conversation.id],
     );
 
-    // Mark all messages from the other party as read
-    const otherPartyId =
-      userId === booking.customer_id ? booking.maid_id : booking.customer_id;
-
+    // ── Step 6: mark other party's messages as read ─────────────────
+    const otherPartyId = userId === customerId ? maidUserId : customerId;
     await db.query(
       `UPDATE messages
        SET is_read = true
@@ -83,13 +99,24 @@ export async function getOrCreateConversation(req, res) {
       [conversation.id, otherPartyId],
     );
 
+    // Reset unread counter for current user
+    const isCustomer = userId === customerId;
+    await db.query(
+      `UPDATE conversations
+       SET ${isCustomer ? "unread_customer = 0" : "unread_maid = 0"}
+       WHERE id = $1`,
+      [conversation.id],
+    );
+
     res.json({
       conversation,
       messages: messagesResult.rows,
     });
   } catch (err) {
-    console.error("Error getting/creating conversation:", err);
-    res.status(500).json({ error: "Failed to get conversation" });
+    // Log the full error so it shows in your backend terminal
+    console.error("[chat] getOrCreateConversation error:", err.message);
+    console.error(err.stack);
+    res.status(500).json({ error: err.message }); // surface real error in dev
   }
 }
 
