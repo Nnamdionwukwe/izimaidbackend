@@ -87,7 +87,22 @@ export async function getOrCreateConversation(req, res) {
 
     // ── Step 5: fetch messages ────────────────────────────────────────
     const messagesResult = await db.query(
-      `SELECT m.*, u.name AS sender_name, u.role AS sender_role, u.avatar AS sender_avatar
+      `SELECT
+         m.id,
+         m.conversation_id,
+         m.sender_id,
+         m.message_type,
+         m.is_read,
+         m.created_at,
+         m.deleted_at,
+         m.deleted_by,
+         -- Regular users see a placeholder for deleted messages
+         CASE WHEN m.deleted_at IS NOT NULL THEN NULL      ELSE m.media_url   END AS media_url,
+         CASE WHEN m.deleted_at IS NOT NULL THEN NULL      ELSE m.media_type  END AS media_type,
+         CASE WHEN m.deleted_at IS NOT NULL THEN 'deleted' ELSE m.content     END AS content,
+         u.name   AS sender_name,
+         u.role   AS sender_role,
+         u.avatar AS sender_avatar
        FROM messages m
        JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = $1
@@ -442,7 +457,9 @@ export async function deleteMessage(req, res) {
       }
     }
 
-    // Delete media from Cloudinary if present
+    // Soft-delete: set deleted_at timestamp and clear content/media
+    // The row stays in the DB so admin can always see "This message was deleted"
+    // Media is removed from Cloudinary since we store the placeholder instead
     if (msg.media_url) {
       try {
         const publicId = msg.media_url.split("/").pop().split(".")[0];
@@ -452,9 +469,19 @@ export async function deleteMessage(req, res) {
       }
     }
 
-    await db.query(`DELETE FROM messages WHERE id = $1`, [messageId]);
+    await db.query(
+      `UPDATE messages
+       SET deleted_at   = CURRENT_TIMESTAMP,
+           deleted_by   = $2,
+           content      = NULL,
+           media_url    = NULL,
+           media_type   = NULL,
+           message_type = 'text'
+       WHERE id = $1`,
+      [messageId, userId],
+    );
 
-    res.json({ success: true });
+    res.json({ success: true, deleted: true });
   } catch (err) {
     console.error("Error deleting message:", err);
     res.status(500).json({ error: "Failed to delete message" });
@@ -577,15 +604,17 @@ export async function adminGetConversation(req, res) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
-    // Fetch all messages with sender info — admin sees everything
+    // Fetch all messages with sender info — admin sees everything including deleted
     const messagesResult = await db.query(
       `SELECT
          m.*,
-         u.name   AS sender_name,
-         u.role   AS sender_role,
-         u.avatar AS sender_avatar
+         u.name    AS sender_name,
+         u.role    AS sender_role,
+         u.avatar  AS sender_avatar,
+         du.name   AS deleted_by_name
        FROM messages m
-       JOIN users u ON u.id = m.sender_id
+       JOIN users u            ON u.id  = m.sender_id
+       LEFT JOIN users du      ON du.id = m.deleted_by
        WHERE m.conversation_id = $1
        ORDER BY m.created_at ASC`,
       [conversationId],

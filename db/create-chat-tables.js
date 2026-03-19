@@ -65,6 +65,8 @@ async function run() {
         media_url        TEXT,
         media_type       VARCHAR(10),                                 -- 'image' | 'video'
         is_read          BOOLEAN NOT NULL DEFAULT false,
+        deleted_at       TIMESTAMP WITH TIME ZONE,           -- soft-delete timestamp
+        deleted_by       UUID REFERENCES users(id),          -- who deleted it
         created_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         -- enforce: text messages must have content, media messages must have media_url
         CONSTRAINT chk_message_content CHECK (
@@ -104,6 +106,14 @@ async function run() {
 
     await client.query("COMMIT");
     console.log("\n✅ Chat tables created successfully");
+
+    // Add soft-delete columns to existing messages table if they don't exist
+    await client.query(`
+      ALTER TABLE messages
+        ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS deleted_by UUID REFERENCES users(id)
+    `);
+    console.log("✓ messages soft-delete columns");
 
     // Add soft-delete columns to existing conversations table if they don't exist
     await client.query(`
