@@ -439,9 +439,16 @@ export async function deleteMessage(req, res) {
 
     const msg = msgResult.rows[0];
 
+    // Normalize UUIDs to avoid case/type mismatch (same fix as getOrCreateConversation)
+    const normalizedSenderId = String(msg.sender_id).toLowerCase().trim();
+    const normalizedUserId = String(userId).toLowerCase().trim();
+
     // Only sender or admin can delete
-    if (userRole !== "admin" && msg.sender_id !== userId) {
-      return res.status(403).json({ error: "Unauthorized" });
+    if (userRole !== "admin" && normalizedSenderId !== normalizedUserId) {
+      return res.status(403).json({
+        error: "Unauthorized",
+        debug: { normalizedSenderId, normalizedUserId },
+      });
     }
 
     // Enforce 5-minute delete window for non-admins
