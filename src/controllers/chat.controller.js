@@ -23,41 +23,32 @@ export async function getOrCreateConversation(req, res) {
 
     const raw = rawBooking.rows[0];
 
-    // ── Step 2: resolve the maid's user_id ──────────────────────────
-    // bookings.maid_id might be:
-    //   (a) a users.id directly  — common when maid is stored as user
-    //   (b) a maid_profiles.id   — requires a join to get the user_id
-    // We try to find a user with that id first; if not found, treat it
-    // as a maid_profiles id and look up the real user_id.
-    let maidUserId = raw.maid_id;
-
-    const userCheck = await db.query(`SELECT id FROM users WHERE id = $1`, [
-      raw.maid_id,
-    ]);
-
-    if (userCheck.rows.length === 0) {
-      // maid_id is a maid_profiles.id — look up the user_id
-      const profileCheck = await db.query(
-        `SELECT user_id FROM maid_profiles WHERE id = $1`,
-        [raw.maid_id],
-      );
-      if (profileCheck.rows.length === 0) {
-        return res
-          .status(500)
-          .json({ error: "Cannot resolve maid user ID for this booking" });
-      }
-      maidUserId = profileCheck.rows[0].user_id;
-    }
-
-    const customerId = raw.user_id;
+    // ── Step 2: both IDs are direct user IDs (confirmed from booking controller) ──
+    // bookings.customer_id = users.id  (the customer)
+    // bookings.maid_id     = users.id  (the maid's user account)
+    // Normalize to lowercase strings to avoid UUID case/type mismatches
+    const customerId = String(raw.customer_id).toLowerCase().trim();
+    const maidUserId = String(raw.maid_id).toLowerCase().trim();
+    const requesterId = String(userId).toLowerCase().trim();
 
     // ── Step 3: auth check ────────────────────────────────────────────
     if (
       userRole !== "admin" &&
-      userId !== customerId &&
-      userId !== maidUserId
+      requesterId !== customerId &&
+      requesterId !== maidUserId
     ) {
-      return res.status(403).json({ error: "Unauthorized" });
+      // Surface debug info in development so you can diagnose mismatches
+      console.error("[chat] 403 debug:", {
+        requesterId,
+        customerId,
+        maidUserId,
+        userRole,
+        bookingId,
+      });
+      return res.status(403).json({
+        error: "Unauthorized",
+        debug: { requesterId, customerId, maidUserId },
+      });
     }
 
     // ── Step 4: get or create conversation ───────────────────────────
@@ -91,7 +82,7 @@ export async function getOrCreateConversation(req, res) {
     );
 
     // ── Step 6: mark other party's messages as read ─────────────────
-    const otherPartyId = userId === customerId ? maidUserId : customerId;
+    const otherPartyId = requesterId === customerId ? maidUserId : customerId;
     await db.query(
       `UPDATE messages
        SET is_read = true
@@ -100,7 +91,7 @@ export async function getOrCreateConversation(req, res) {
     );
 
     // Reset unread counter for current user
-    const isCustomer = userId === customerId;
+    const isCustomer = requesterId === customerId;
     await db.query(
       `UPDATE conversations
        SET ${isCustomer ? "unread_customer = 0" : "unread_maid = 0"}
@@ -425,9 +416,11 @@ export async function deleteMessage(req, res) {
       const ageMinutes =
         (Date.now() - new Date(msg.created_at).getTime()) / 60000;
       if (ageMinutes > 5) {
-        return res.status(403).json({
-          error: "Messages can only be deleted within 5 minutes of sending",
-        });
+        return res
+          .status(403)
+          .json({
+            error: "Messages can only be deleted within 5 minutes of sending",
+          });
       }
     }
 
@@ -450,18 +443,18 @@ export async function deleteMessage(req, res) {
   }
 }
 
+// ─── ADMIN ONLY: List all conversations (read-only view) ─────────────
 export async function adminGetAllConversations(req, res) {
   try {
     const { page = 1, limit = 20, search = "" } = req.query;
     const offset = (page - 1) * limit;
-    const q = search.trim();
 
-    // Build params — $1=limit, $2=offset, $3=search (optional)
-    const params = [Number(limit), Number(offset)];
-    const searchClause = q
-      ? `WHERE (cu.name ILIKE $3 OR mu.name ILIKE $3 OR b.id::text ILIKE $3)`
+    const searchClause = search.trim()
+      ? `AND (cu.name ILIKE $3 OR mu.name ILIKE $3 OR b.id::text ILIKE $3)`
       : "";
-    if (q) params.push(`%${q}%`);
+    const params = search.trim()
+      ? [limit, offset, `%${search.trim()}%`]
+      : [limit, offset];
 
     const result = await db.query(
       `SELECT
@@ -479,7 +472,7 @@ export async function adminGetAllConversations(req, res) {
          mu.avatar         AS maid_avatar,
          (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id)::int
                            AS message_count,
-         (SELECT content    FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+         (SELECT content   FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
                            AS last_message,
          (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
                            AS last_message_at
@@ -493,29 +486,22 @@ export async function adminGetAllConversations(req, res) {
       params,
     );
 
-    // Count query
-    const countParams = q ? [`%${q}%`] : [];
-    const countWhere = q
-      ? `WHERE (cu.name ILIKE $1 OR mu.name ILIKE $1 OR b.id::text ILIKE $1)`
+    // Total count for pagination
+    const countParams = search.trim() ? [`%${search.trim()}%`] : [];
+    const countClause = search.trim()
+      ? `JOIN users cu ON cu.id = c.customer_id JOIN users mu ON mu.id = c.maid_id WHERE (cu.name ILIKE $1 OR mu.name ILIKE $1)`
       : "";
-
     const countResult = await db.query(
-      `SELECT COUNT(*) FROM conversations c
-       JOIN bookings b ON b.id = c.booking_id
-       JOIN users cu   ON cu.id = c.customer_id
-       JOIN users mu   ON mu.id = c.maid_id
-       ${countWhere}`,
+      `SELECT COUNT(*) FROM conversations c ${countClause}`,
       countParams,
     );
 
-    const total = parseInt(countResult.rows[0].count, 10);
-
     res.json({
       conversations: result.rows,
-      total,
+      total: parseInt(countResult.rows[0].count, 10),
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
-      pages: Math.ceil(total / limit),
+      pages: Math.ceil(parseInt(countResult.rows[0].count, 10) / limit),
     });
   } catch (err) {
     console.error("Error fetching all conversations (admin):", err);
@@ -528,6 +514,7 @@ export async function adminGetConversation(req, res) {
   try {
     const { conversationId } = req.params;
 
+    // Fetch conversation with participant details
     const convResult = await db.query(
       `SELECT
          c.*,
@@ -556,6 +543,7 @@ export async function adminGetConversation(req, res) {
       return res.status(404).json({ error: "Conversation not found" });
     }
 
+    // Fetch all messages with sender info — admin sees everything
     const messagesResult = await db.query(
       `SELECT
          m.*,
@@ -569,11 +557,13 @@ export async function adminGetConversation(req, res) {
       [conversationId],
     );
 
-    // Admin viewing does NOT mark messages as read and does NOT
+    // NOTE: Admin viewing does NOT mark messages as read and does NOT
     // affect unread counters for the customer or maid.
+
     res.json({
       conversation: convResult.rows[0],
       messages: messagesResult.rows,
+      // Remind callers this is a read-only admin view
       admin_view: true,
     });
   } catch (err) {
