@@ -96,13 +96,14 @@ router.post(
 //   Mark all incoming messages in this conversation as read
 router.patch("/:conversationId/read", requireAuth, markMessagesRead);
 
+// DELETE /api/chat/messages/:messageId  ← MUST come before /:conversationId
+//   Delete own message (within 5 minutes of sending)
+//   NOTE: specific routes must be registered before wildcard routes in Express
+router.delete("/messages/:messageId", requireAuth, deleteMessage);
+
 // DELETE /api/chat/:conversationId
 //   Soft-delete a conversation for the current user only (customer or maid)
 //   Admin cannot use this — their view is never affected
 router.delete("/:conversationId", requireAuth, deleteConversation);
-
-// DELETE /api/chat/messages/:messageId
-//   Delete own message (within 5 minutes of sending)
-router.delete("/messages/:messageId", requireAuth, deleteMessage);
 
 export default router;
