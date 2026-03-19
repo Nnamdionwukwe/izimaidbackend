@@ -464,30 +464,18 @@ export async function deleteMessage(req, res) {
       }
     }
 
-    // Soft-delete: set deleted_at timestamp and clear content/media
-    // The row stays in the DB so admin can always see "This message was deleted"
-    // Media is removed from Cloudinary since we store the placeholder instead
-    if (msg.media_url) {
-      try {
-        const publicId = msg.media_url.split("/").pop().split(".")[0];
-        await deleteMediaFromCloudinary(publicId, msg.media_type);
-      } catch (e) {
-        console.error("Cloudinary delete error:", e);
-      }
-    }
+    // Soft-delete only — content and media_url are preserved in DB
+    // so admin can always read the original message and view media.
+    // We do NOT delete from Cloudinary so admin can still open media files.
 
     try {
       // Soft-delete — requires deleted_at / deleted_by columns (run migration first)
-      // content = '__deleted__' satisfies the CHECK constraint
-      // (text messages must have content IS NOT NULL)
+      // Only mark as deleted — keep content/media_url intact so admin can still read them.
+      // Regular users see a placeholder based on deleted_at; admin sees the real content.
       await db.query(
         `UPDATE messages
-         SET deleted_at   = CURRENT_TIMESTAMP,
-             deleted_by   = $2,
-             content      = '__deleted__',
-             media_url    = NULL,
-             media_type   = NULL,
-             message_type = 'text'
+         SET deleted_at = CURRENT_TIMESTAMP,
+             deleted_by = $2
          WHERE id = $1`,
         [messageId, userId],
       );
