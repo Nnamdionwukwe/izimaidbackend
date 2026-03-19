@@ -469,22 +469,45 @@ export async function deleteMessage(req, res) {
       }
     }
 
-    await db.query(
-      `UPDATE messages
-       SET deleted_at   = CURRENT_TIMESTAMP,
-           deleted_by   = $2,
-           content      = NULL,
-           media_url    = NULL,
-           media_type   = NULL,
-           message_type = 'text'
-       WHERE id = $1`,
-      [messageId, userId],
-    );
+    try {
+      // Soft-delete — requires deleted_at / deleted_by columns (run migration first)
+      await db.query(
+        `UPDATE messages
+         SET deleted_at   = CURRENT_TIMESTAMP,
+             deleted_by   = $2,
+             content      = NULL,
+             media_url    = NULL,
+             media_type   = NULL,
+             message_type = 'text'
+         WHERE id = $1`,
+        [messageId, userId],
+      );
+    } catch (updateErr) {
+      // If the column doesn't exist yet, fall back to hard-delete so the
+      // app doesn't break while the migration is pending.
+      // Surface the real error so you know to run: node db/create-chat-tables.js
+      if (
+        updateErr.message?.includes("column") &&
+        updateErr.message?.includes("deleted")
+      ) {
+        console.error(
+          "[chat] soft-delete columns missing — run: node db/create-chat-tables.js",
+        );
+        console.error(
+          "[chat] falling back to hard-delete for message:",
+          messageId,
+        );
+        await db.query(`DELETE FROM messages WHERE id = $1`, [messageId]);
+      } else {
+        throw updateErr; // re-throw any other unexpected error
+      }
+    }
 
     res.json({ success: true, deleted: true });
   } catch (err) {
-    console.error("Error deleting message:", err);
-    res.status(500).json({ error: "Failed to delete message" });
+    console.error("[chat] deleteMessage error:", err.message);
+    // Surface real error in response so you can debug without checking server logs
+    res.status(500).json({ error: err.message });
   }
 }
 
