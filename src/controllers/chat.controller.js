@@ -478,11 +478,13 @@ export async function deleteMessage(req, res) {
 
     try {
       // Soft-delete — requires deleted_at / deleted_by columns (run migration first)
+      // content = '__deleted__' satisfies the CHECK constraint
+      // (text messages must have content IS NOT NULL)
       await db.query(
         `UPDATE messages
          SET deleted_at   = CURRENT_TIMESTAMP,
              deleted_by   = $2,
-             content      = NULL,
+             content      = '__deleted__',
              media_url    = NULL,
              media_type   = NULL,
              message_type = 'text'

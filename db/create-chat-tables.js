@@ -29,6 +29,12 @@ async function run() {
     `);
     console.log("✓ deleted_at, deleted_by columns added to messages");
 
+    // Drop CHECK constraint that blocks soft-delete
+    await client.query(
+      `ALTER TABLE messages DROP CONSTRAINT IF EXISTS chk_message_content`,
+    );
+    console.log("✓ chk_message_content constraint dropped");
+
     // Also add conversation soft-delete columns in case they're missing too
     await client.query(`
       ALTER TABLE conversations
