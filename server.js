@@ -16,6 +16,7 @@ import customerSupportRoutes from "./src/routes/customer-support.js";
 import maidSupportRoutes from "./src/routes/maid-support.js";
 import chatRoutes from "./src/routes/chat.routes.js";
 import supportChatRouter from "./src/routes/support-chat.routes.js";
+import maidSupportChatRouter from "./src/routes/maid-support-chat.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,6 +71,7 @@ app.use("/api/customer-support", customerSupportRoutes); // ← ADD THIS LINE
 app.use("/api/maid-support", maidSupportRoutes); // ← ADD THIS LINE
 app.use("/api/chat", chatRoutes);
 app.use("/api/support-chat", supportChatRouter);
+app.use("/api/maid-support-chat", maidSupportChatRouter);
 
 app.get("/health", async (_req, res) => {
   const status = { postgres: "ok", redis: "ok" };
