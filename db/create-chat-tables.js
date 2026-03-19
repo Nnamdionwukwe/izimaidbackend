@@ -27,10 +27,14 @@ async function run() {
         booking_id       UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
         customer_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         maid_id          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        unread_customer  INTEGER NOT NULL DEFAULT 0,
-        unread_maid      INTEGER NOT NULL DEFAULT 0,
-        created_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        updated_at       TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        unread_customer      INTEGER NOT NULL DEFAULT 0,
+        unread_maid          INTEGER NOT NULL DEFAULT 0,
+        deleted_by_customer  BOOLEAN NOT NULL DEFAULT false,
+        deleted_by_maid      BOOLEAN NOT NULL DEFAULT false,
+        deleted_at_customer  TIMESTAMP WITH TIME ZONE,
+        deleted_at_maid      TIMESTAMP WITH TIME ZONE,
+        created_at           TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at           TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
     console.log("✓ conversations");
@@ -100,6 +104,16 @@ async function run() {
 
     await client.query("COMMIT");
     console.log("\n✅ Chat tables created successfully");
+
+    // Add soft-delete columns to existing conversations table if they don't exist
+    await client.query(`
+      ALTER TABLE conversations
+        ADD COLUMN IF NOT EXISTS deleted_by_customer BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS deleted_by_maid     BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS deleted_at_customer TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS deleted_at_maid     TIMESTAMP WITH TIME ZONE
+    `);
+    console.log("✓ soft-delete columns");
 
     // Quick verification
     const check = await client.query(`

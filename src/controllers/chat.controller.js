@@ -69,6 +69,20 @@ export async function getOrCreateConversation(req, res) {
       conversation = newConv.rows[0];
     } else {
       conversation = convResult.rows[0];
+      // If user previously deleted this conversation, re-open it for them
+      const isCustomer = requesterId === customerId;
+      if (
+        (isCustomer && conversation.deleted_by_customer) ||
+        (!isCustomer && conversation.deleted_by_maid)
+      ) {
+        const col = isCustomer ? "deleted_by_customer" : "deleted_by_maid";
+        const atCol = isCustomer ? "deleted_at_customer" : "deleted_at_maid";
+        await db.query(
+          `UPDATE conversations SET ${col} = false, ${atCol} = NULL WHERE id = $1`,
+          [conversation.id],
+        );
+        conversation = { ...conversation, [col]: false, [atCol]: null };
+      }
     }
 
     // ── Step 5: fetch messages ────────────────────────────────────────
@@ -354,7 +368,11 @@ export async function getMyConversations(req, res) {
         LEFT JOIN bookings b ON b.id = c.booking_id
         LEFT JOIN users cu   ON cu.id = c.customer_id
         LEFT JOIN users mu   ON mu.id = c.maid_id
-        WHERE c.customer_id = $1 OR c.maid_id = $1
+        WHERE (c.customer_id = $1 OR c.maid_id = $1)
+          AND (
+            (c.customer_id = $1 AND c.deleted_by_customer = false) OR
+            (c.maid_id     = $1 AND c.deleted_by_maid     = false)
+          )
         ORDER BY c.updated_at DESC
       `;
       params = [userId];
@@ -462,6 +480,16 @@ export async function adminGetAllConversations(req, res) {
          c.booking_id,
          c.created_at,
          c.updated_at,
+         c.deleted_by_customer,
+         c.deleted_by_maid,
+         c.deleted_at_customer,
+         c.deleted_at_maid,
+         CASE
+           WHEN c.deleted_by_customer AND c.deleted_by_maid THEN 'deleted_by_both'
+           WHEN c.deleted_by_customer THEN 'deleted_by_customer'
+           WHEN c.deleted_by_maid     THEN 'deleted_by_maid'
+           ELSE 'active'
+         END AS deletion_status,
          b.service_date,
          b.status          AS booking_status,
          cu.id             AS customer_id,
@@ -518,6 +546,12 @@ export async function adminGetConversation(req, res) {
     const convResult = await db.query(
       `SELECT
          c.*,
+         CASE
+           WHEN c.deleted_by_customer AND c.deleted_by_maid THEN 'deleted_by_both'
+           WHEN c.deleted_by_customer THEN 'deleted_by_customer'
+           WHEN c.deleted_by_maid     THEN 'deleted_by_maid'
+           ELSE 'active'
+         END AS deletion_status,
          b.service_date,
          b.status          AS booking_status,
          b.address,
@@ -569,5 +603,61 @@ export async function adminGetConversation(req, res) {
   } catch (err) {
     console.error("Error fetching conversation (admin):", err);
     res.status(500).json({ error: "Failed to fetch conversation" });
+  }
+}
+
+// ─── Soft-delete a conversation for one party ────────────────────────
+// Customer and maid can each "delete" their view independently.
+// Admin always sees everything — their view is never affected.
+export async function deleteConversation(req, res) {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    if (userRole === "admin") {
+      return res
+        .status(403)
+        .json({ error: "Admins cannot delete conversations" });
+    }
+
+    const convResult = await db.query(
+      `SELECT * FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+
+    if (convResult.rows.length === 0) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+
+    const conv = convResult.rows[0];
+    const requesterId = String(userId).toLowerCase().trim();
+    const customerId = String(conv.customer_id).toLowerCase().trim();
+    const maidId = String(conv.maid_id).toLowerCase().trim();
+
+    const isCustomer = requesterId === customerId;
+    const isMaid = requesterId === maidId;
+
+    if (!isCustomer && !isMaid) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    const col = isCustomer ? "deleted_by_customer" : "deleted_by_maid";
+    const atCol = isCustomer ? "deleted_at_customer" : "deleted_at_maid";
+
+    await db.query(
+      `UPDATE conversations
+       SET ${col} = true, ${atCol} = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [conversationId],
+    );
+
+    res.json({
+      success: true,
+      message: "Conversation removed from your inbox",
+    });
+  } catch (err) {
+    console.error("[chat] deleteConversation error:", err.message);
+    res.status(500).json({ error: "Failed to delete conversation" });
   }
 }
