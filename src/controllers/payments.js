@@ -15,9 +15,9 @@ async function paystackRequest(method, path, body) {
   return res.json();
 }
 
+// ── Initialize payment ─────────────────────────────────────────
 export const initializePayment = async (req, res) => {
   const { booking_id } = req.body;
-
   if (!booking_id)
     return res.status(400).json({ error: "booking_id is required" });
 
@@ -25,12 +25,14 @@ export const initializePayment = async (req, res) => {
     const { rows: bookingRows } = await req.db.query(
       `SELECT b.*, u.email FROM bookings b
        JOIN users u ON u.id = b.customer_id
-       WHERE b.id = $1 AND b.customer_id = $2 AND b.status = 'pending'`,
+       WHERE b.id = $1 AND b.customer_id = $2 AND b.status = 'awaiting_payment'`,
       [booking_id, req.user.id],
     );
 
     if (!bookingRows.length)
-      return res.status(404).json({ error: "pending booking not found" });
+      return res
+        .status(404)
+        .json({ error: "booking not found or already paid" });
 
     const booking = bookingRows[0];
 
@@ -49,6 +51,7 @@ export const initializePayment = async (req, res) => {
         amount: Math.round(Number(booking.total_amount) * 100),
         currency: "NGN",
         reference: `izimaid_${booking_id}_${Date.now()}`,
+        callback_url: `${process.env.FRONTEND_URL}/payment/verify`,
         metadata: { booking_id, customer_id: req.user.id },
       },
     );
@@ -77,6 +80,7 @@ export const initializePayment = async (req, res) => {
   }
 };
 
+// ── Verify payment (called after Paystack redirect) ────────────
 export const verifyPayment = async (req, res) => {
   const { reference } = req.params;
 
@@ -103,8 +107,10 @@ export const verifyPayment = async (req, res) => {
         `UPDATE payments SET status = 'success', paid_at = NOW() WHERE paystack_reference = $1`,
         [reference],
       );
+      // Move to 'pending' — now visible to admin for approval
       await client.query(
-        `UPDATE bookings SET status = 'confirmed' WHERE id = $1 AND status = 'pending'`,
+        `UPDATE bookings SET status = 'pending', updated_at = NOW()
+         WHERE id = $1 AND status = 'awaiting_payment'`,
         [booking_id],
       );
       await client.query("COMMIT");
@@ -115,13 +121,17 @@ export const verifyPayment = async (req, res) => {
       client.release();
     }
 
-    return res.json({ message: "payment verified", booking_id });
+    return res.json({
+      message: "payment verified and awaiting admin approval",
+      booking_id,
+    });
   } catch (err) {
     console.error("[payments.controller/verifyPayment]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
 
+// ── Webhook (Paystack server-to-server) ────────────────────────
 export const webhook = async (req, res) => {
   const signature = req.headers["x-paystack-signature"];
   const hash = crypto
@@ -144,9 +154,10 @@ export const webhook = async (req, res) => {
            WHERE paystack_reference = $1 AND status != 'success'`,
           [data.reference],
         );
+        // Webhook also moves to pending for admin approval
         await client.query(
-          `UPDATE bookings SET status = 'confirmed'
-           WHERE id = $1 AND status = 'pending'`,
+          `UPDATE bookings SET status = 'pending', updated_at = NOW()
+           WHERE id = $1 AND status = 'awaiting_payment'`,
           [data.metadata?.booking_id],
         );
         await client.query("COMMIT");
@@ -172,6 +183,108 @@ export const webhook = async (req, res) => {
   }
 };
 
+// ── Admin approve booking ──────────────────────────────────────
+export const adminApproveBooking = async (req, res) => {
+  const { booking_id } = req.params;
+
+  try {
+    // Verify payment exists and is successful
+    const { rows: paymentRows } = await req.db.query(
+      `SELECT p.*, b.status as booking_status FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       WHERE p.booking_id = $1 AND p.status = 'success'`,
+      [booking_id],
+    );
+
+    if (!paymentRows.length) {
+      return res
+        .status(402)
+        .json({ error: "no successful payment found for this booking" });
+    }
+
+    if (paymentRows[0].booking_status !== "pending") {
+      return res
+        .status(409)
+        .json({ error: `booking is already ${paymentRows[0].booking_status}` });
+    }
+
+    // Approve — move to confirmed so maid can see it
+    const { rows } = await req.db.query(
+      `UPDATE bookings SET status = 'confirmed', updated_at = NOW()
+       WHERE id = $1 RETURNING *`,
+      [booking_id],
+    );
+
+    return res.json({
+      message: "booking approved and sent to maid",
+      booking: rows[0],
+    });
+  } catch (err) {
+    console.error("[payments.controller/adminApproveBooking]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Admin reject booking (refund manually) ─────────────────────
+export const adminRejectBooking = async (req, res) => {
+  const { booking_id } = req.params;
+  const { reason } = req.body;
+
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE bookings SET status = 'cancelled', updated_at = NOW()
+       WHERE id = $1 AND status = 'pending' RETURNING *`,
+      [booking_id],
+    );
+
+    if (!rows.length)
+      return res
+        .status(404)
+        .json({ error: "booking not found or not pending" });
+
+    // Note: actual Paystack refund would be initiated here
+    // For now we mark payment as refunded
+    await req.db.query(
+      `UPDATE payments SET status = 'refunded' WHERE booking_id = $1`,
+      [booking_id],
+    );
+
+    return res.json({
+      message: "booking rejected",
+      booking: rows[0],
+      note: "process refund via Paystack dashboard",
+    });
+  } catch (err) {
+    console.error("[payments.controller/adminRejectBooking]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── List pending payments (admin) ──────────────────────────────
+export const listPendingPayments = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT b.id as booking_id, b.status as booking_status,
+              b.service_date, b.total_amount, b.address,
+              b.duration_hours, b.created_at,
+              c.name as customer_name, c.email as customer_email,
+              m.name as maid_name,
+              p.status as payment_status, p.paystack_reference, p.paid_at
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       LEFT JOIN payments p ON p.booking_id = b.id
+       WHERE b.status = 'pending' AND p.status = 'success'
+       ORDER BY p.paid_at DESC`,
+    );
+    return res.json({ bookings: rows });
+  } catch (err) {
+    console.error("[payments.controller/listPendingPayments]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Get payment for a booking ──────────────────────────────────
 export const getPayment = async (req, res) => {
   try {
     const { rows } = await req.db.query(
@@ -181,7 +294,6 @@ export const getPayment = async (req, res) => {
          AND (b.customer_id = $2 OR b.maid_id = $2 OR $3 = 'admin')`,
       [req.params.booking_id, req.user.id, req.user.role],
     );
-
     if (!rows.length)
       return res.status(404).json({ error: "payment not found" });
     return res.json({ payment: rows[0] });
