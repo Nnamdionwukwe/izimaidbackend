@@ -2,9 +2,11 @@ export const createBooking = async (req, res) => {
   const { maid_id, service_date, duration_hours, address, notes } = req.body;
 
   if (!maid_id || !service_date || !duration_hours || !address) {
-    return res.status(400).json({
-      error: "maid_id, service_date, duration_hours, address are required",
-    });
+    return res
+      .status(400)
+      .json({
+        error: "maid_id, service_date, duration_hours, address are required",
+      });
   }
 
   try {
@@ -26,9 +28,10 @@ export const createBooking = async (req, res) => {
 
     const total_amount = Number(maid.hourly_rate) * Number(duration_hours);
 
+    // Start as awaiting_payment — maid won't see it until paid + admin approved
     const { rows } = await req.db.query(
-      `INSERT INTO bookings (customer_id, maid_id, service_date, duration_hours, address, notes, total_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO bookings (customer_id, maid_id, service_date, duration_hours, address, notes, total_amount, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment') RETURNING *`,
       [
         req.user.id,
         maid_id,
@@ -50,7 +53,6 @@ export const createBooking = async (req, res) => {
 export const listBookings = async (req, res) => {
   const { status, page = 1, limit = 20 } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
-
   const conditions = [];
   const params = [];
 
@@ -61,6 +63,8 @@ export const listBookings = async (req, res) => {
   if (req.user.role === "maid") {
     params.push(req.user.id);
     conditions.push(`b.maid_id = $${params.length}`);
+    // Maids only see bookings that are pending or beyond (not awaiting_payment)
+    conditions.push(`b.status NOT IN ('awaiting_payment')`);
   }
   if (status) {
     params.push(status);
@@ -83,7 +87,6 @@ export const listBookings = async (req, res) => {
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
-
     return res.json({ bookings: rows });
   } catch (err) {
     console.error("[bookings.controller/listBookings]", err);
@@ -112,7 +115,6 @@ export const getBooking = async (req, res) => {
     const booking = rows[0];
     const isOwner =
       booking.customer_id === req.user.id || booking.maid_id === req.user.id;
-
     if (!isOwner && req.user.role !== "admin") {
       return res.status(403).json({ error: "forbidden" });
     }
@@ -125,73 +127,39 @@ export const getBooking = async (req, res) => {
 };
 
 export const updateStatus = async (req, res) => {
-  const { status, declined_reason, declined_by } = req.body;
+  const { status } = req.body;
 
-  // ── Valid status transitions by role ────────────────────────────────────
   const validTransitions = {
     customer: ["cancelled"],
-    maid: ["confirmed", "in_progress", "completed", "declined"],
+    maid: ["confirmed", "in_progress", "completed"],
     admin: [
+      "awaiting_payment",
       "pending",
       "confirmed",
       "in_progress",
       "completed",
       "cancelled",
-      "declined",
     ],
   };
 
   if (!validTransitions[req.user.role]?.includes(status)) {
-    return res.status(400).json({
-      error: `invalid status transition for role ${req.user.role}`,
-    });
+    return res
+      .status(400)
+      .json({ error: `invalid status transition for role ${req.user.role}` });
   }
 
   try {
-    // ── Get the booking first ──────────────────────────────────────────────
-    const { rows: bookingRows } = await req.db.query(
-      `SELECT * FROM bookings 
-       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2 OR $3 = 'admin')`,
-      [req.params.id, req.user.id, req.user.role],
-    );
-
-    if (!bookingRows.length) {
-      return res.status(404).json({
-        error: "booking not found or not authorized",
-      });
-    }
-
-    // ── Build update query dynamically ─────────────────────────────────────
-    const updateFields = ["status = $1", "updated_at = CURRENT_TIMESTAMP"];
-    const params = [status, req.params.id, req.user.id, req.user.role];
-
-    // Handle declined status with optional reason
-    if (status === "declined") {
-      if (declined_by) {
-        updateFields.push(`declined_by = $${params.length + 1}`);
-        params.push(declined_by);
-      }
-
-      if (declined_reason) {
-        updateFields.push(`declined_reason = $${params.length + 1}`);
-        params.push(declined_reason);
-      }
-    }
-
     const { rows } = await req.db.query(
-      `UPDATE bookings 
-       SET ${updateFields.join(", ")}
+      `UPDATE bookings SET status = $1, updated_at = CURRENT_TIMESTAMP
        WHERE id = $2 AND (customer_id = $3 OR maid_id = $3 OR $4 = 'admin')
        RETURNING *`,
-      params,
+      [status, req.params.id, req.user.id, req.user.role],
     );
 
-    if (!rows.length) {
-      return res.status(404).json({
-        error: "booking not found or not authorized",
-      });
-    }
-
+    if (!rows.length)
+      return res
+        .status(404)
+        .json({ error: "booking not found or not authorized" });
     return res.json({ booking: rows[0] });
   } catch (err) {
     console.error("[bookings.controller/updateStatus]", err);
@@ -201,7 +169,6 @@ export const updateStatus = async (req, res) => {
 
 export const submitReview = async (req, res) => {
   const { rating, comment } = req.body;
-
   if (!rating || rating < 1 || rating > 5) {
     return res.status(400).json({ error: "rating must be between 1 and 5" });
   }
@@ -216,12 +183,10 @@ export const submitReview = async (req, res) => {
       return res.status(404).json({ error: "completed booking not found" });
 
     const booking = bookingRows[0];
-
     const { rows } = await req.db.query(
       `INSERT INTO reviews (booking_id, customer_id, maid_id, rating, comment)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (booking_id) DO NOTHING
-       RETURNING *`,
+       ON CONFLICT (booking_id) DO NOTHING RETURNING *`,
       [booking.id, req.user.id, booking.maid_id, rating, comment || null],
     );
 
