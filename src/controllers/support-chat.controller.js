@@ -75,7 +75,27 @@ export async function getOrCreateSupportConversation(req, res) {
       }
     }
 
-    // ── Fetch messages ────────────────────────────────────────────────
+    const isCustomer = requesterId === normalizedCustomerId;
+
+    // ── Mark other party's messages as read FIRST ─────────────────────
+    // Must happen before fetching messages so the returned rows have
+    // is_read = true — this is what drives the ✓✓ tick on the frontend.
+    await db.query(
+      `UPDATE support_messages
+       SET is_read = true
+       WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
+      [conversation.id, userId],
+    );
+
+    // Reset unread counter for current user
+    await db.query(
+      `UPDATE support_conversations
+       SET ${isCustomer ? "unread_customer = 0" : "unread_admin = 0"}
+       WHERE id = $1`,
+      [conversation.id],
+    );
+
+    // ── Fetch messages AFTER marking read ─────────────────────────────
     const messagesResult = await db.query(
       `SELECT
          m.id,
@@ -96,25 +116,6 @@ export async function getOrCreateSupportConversation(req, res) {
        JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = $1
        ORDER BY m.created_at ASC`,
-      [conversation.id],
-    );
-
-    // ── Mark other party's messages as read ──────────────────────────
-    const isCustomer = requesterId === normalizedCustomerId;
-    // The "other party" for a customer is any admin; for an admin it's the customer.
-    // We mark messages where the sender is NOT the current user.
-    await db.query(
-      `UPDATE support_messages
-       SET is_read = true
-       WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
-      [conversation.id, userId],
-    );
-
-    // Reset unread counter for current user
-    await db.query(
-      `UPDATE support_conversations
-       SET ${isCustomer ? "unread_customer = 0" : "unread_admin = 0"}
-       WHERE id = $1`,
       [conversation.id],
     );
 
