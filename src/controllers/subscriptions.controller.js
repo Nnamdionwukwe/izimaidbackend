@@ -30,9 +30,16 @@ async function paystackRequest(method, path, body) {
 
 // ── Helper: get plan by id or name ────────────────────────────────────
 async function getPlan(db, planIdOrName) {
+  // UUID pattern check
+  const isUUID =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      planIdOrName,
+    );
+
   const { rows } = await db.query(
-    `SELECT * FROM subscription_plans
-     WHERE (id = $1 OR name = $1) AND is_active = true`,
+    isUUID
+      ? `SELECT * FROM subscription_plans WHERE id = $1::uuid`
+      : `SELECT * FROM subscription_plans WHERE name = $1`,
     [planIdOrName],
   );
   return rows[0] || null;
