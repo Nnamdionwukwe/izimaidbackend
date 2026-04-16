@@ -1,26 +1,64 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import express from "express";
 import {
   initializePayment,
+  initializeStripePayment,
+  initializeBankTransfer,
+  confirmBankTransfer,
+  initializeCryptoPayment,
   verifyPayment,
   webhook,
+  stripeWebhook,
   getPayment,
+  getMaidEarnings,
+  saveMaidBankDetails,
+  getMaidBankDetails,
   adminApproveBooking,
   adminRejectBooking,
+  adminVerifyBankTransfer,
+  adminProcessPayout,
+  adminListPayouts,
   listPendingPayments,
 } from "../controllers/payments.js";
 
 const router = Router();
 
-// Customer
-router.post("/initialize", requireAuth, initializePayment);
-router.get("/verify/:reference", requireAuth, verifyPayment);
+// ── Customer payments ─────────────────────────────────────────────────
+router.post("/initialize", requireAuth, initializePayment); // Paystack
+router.post("/initialize/stripe", requireAuth, initializeStripePayment); // Stripe
+router.post("/initialize/bank", requireAuth, initializeBankTransfer); // Bank transfer
+router.post("/confirm/bank", requireAuth, confirmBankTransfer); // Upload proof
+router.post("/initialize/crypto", requireAuth, initializeCryptoPayment); // Crypto
+
+router.get("/verify", requireAuth, verifyPayment); // ?gateway=paystack&reference=x OR ?gateway=stripe&session_id=x
 router.get("/booking/:booking_id", requireAuth, getPayment);
 
-// Paystack webhook (no auth — verified by signature)
-router.post("/webhook", webhook);
+// ── Maid ──────────────────────────────────────────────────────────────
+router.get("/earnings", requireAuth, requireRole("maid"), getMaidEarnings);
+router.get(
+  "/bank-details",
+  requireAuth,
+  requireRole("maid"),
+  getMaidBankDetails,
+);
+router.post(
+  "/bank-details",
+  requireAuth,
+  requireRole("maid"),
+  saveMaidBankDetails,
+);
 
-// Admin
+// ── Webhooks (no auth — verified by signature) ────────────────────────
+router.post("/webhook", webhook);
+// Stripe needs raw body — must be registered with express.raw middleware in server.js
+router.post(
+  "/webhook/stripe",
+  express.raw({ type: "application/json" }),
+  stripeWebhook,
+);
+
+// ── Admin ─────────────────────────────────────────────────────────────
 router.get("/pending", requireAuth, requireRole("admin"), listPendingPayments);
 router.post(
   "/approve/:booking_id",
@@ -33,6 +71,19 @@ router.post(
   requireAuth,
   requireRole("admin"),
   adminRejectBooking,
+);
+router.patch(
+  "/bank-transfer/:payment_id",
+  requireAuth,
+  requireRole("admin"),
+  adminVerifyBankTransfer,
+);
+router.get("/payouts", requireAuth, requireRole("admin"), adminListPayouts);
+router.patch(
+  "/payouts/:payout_id/process",
+  requireAuth,
+  requireRole("admin"),
+  adminProcessPayout,
 );
 
 export default router;

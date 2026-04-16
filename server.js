@@ -1,3 +1,4 @@
+import { stripeWebhook } from "./src/controllers/payments.js";
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -17,6 +18,9 @@ import maidSupportRoutes from "./src/routes/maid-support.js";
 import chatRoutes from "./src/routes/chat.routes.js";
 import supportChatRouter from "./src/routes/support-chat.routes.js";
 import maidSupportChatRouter from "./src/routes/maid-support-chat.routes.js";
+import settingsRoutes from "./src/routes/settings.routes.js";
+import withdrawalsRoutes from "./src/routes/withdrawals.routes.js";
+import notificationsRoutes from "./src/routes/notifications.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +51,12 @@ app.use(
   }),
 );
 
+app.post(
+  "/api/payments/webhook/stripe",
+  express.raw({ type: "application/json" }),
+  stripeWebhook,
+);
+
 app.use("/api/payments/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
@@ -72,6 +82,9 @@ app.use("/api/maid-support", maidSupportRoutes); // ← ADD THIS LINE
 app.use("/api/chat", chatRoutes);
 app.use("/api/support-chat", supportChatRouter);
 app.use("/api/maid-support-chat", maidSupportChatRouter);
+app.use("/api/settings", settingsRoutes);
+app.use("/api/withdrawals", withdrawalsRoutes);
+app.use("/api/notifications", notificationsRoutes);
 
 app.get("/health", async (_req, res) => {
   const status = { postgres: "ok", redis: "ok" };

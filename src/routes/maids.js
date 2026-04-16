@@ -11,31 +11,32 @@ import {
   adminDeactivateMaid,
   adminActivateMaid,
   adminDeleteReview,
+  // ── new ──
+  getNearbyMaids,
+  getMaidAvailability,
+  setMaidAvailability,
+  uploadMaidDocument,
+  getMaidDocuments,
+  adminReviewDocument,
 } from "../controllers/maids.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// ─── Multer config ────────────────────────────────────────────
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB for documents
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only image files are allowed"), false);
-    }
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed"), false);
   },
 });
 
 // ─── Avatar ───────────────────────────────────────────────────
-// Must come before /:id to avoid being caught by the param route
 router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 
 // ─── Admin ───────────────────────────────────────────────────
-// Must come before /:id for the same reason
 router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 router.patch("/admin/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
 router.patch(
@@ -56,13 +57,30 @@ router.delete(
   requireRole("admin"),
   adminDeleteReview,
 );
+router.patch(
+  "/admin/documents/:docId/review",
+  requireAuth,
+  requireRole("admin"),
+  adminReviewDocument,
+); // ← new
+
+// ─── Maid self ────────────────────────────────────────────────
+router.patch("/profile", requireAuth, updateProfile);
+router.get("/my/documents", requireAuth, getMaidDocuments); // ← new
+router.post(
+  "/my/documents",
+  requireAuth,
+  upload.single("document"),
+  uploadMaidDocument,
+); // ← new
+router.get("/my/availability", requireAuth, getMaidAvailability); // ← new (own)
+router.put("/my/availability", requireAuth, setMaidAvailability); // ← new
 
 // ─── Public ──────────────────────────────────────────────────
+router.get("/nearby", getNearbyMaids); // ← new: ?lat=6.5&lng=3.3&radius_km=20
 router.get("/", listMaids);
 router.get("/:id", getMaid);
 router.get("/:id/reviews", getMaidReviews);
-
-// ─── Maid (self) ─────────────────────────────────────────────
-router.patch("/profile", requireAuth, updateProfile);
+router.get("/:id/availability", getMaidAvailability); // ← new: public view
 
 export default router;
