@@ -7,7 +7,7 @@ import {
 import { notify, notifyAdmins } from "../utils/notify.js";
 import crypto from "crypto";
 
-async function checkTransactionPin(db, userId, pin, ip) {
+async function checkTransactionPin(db, userId, pins, ip) {
   const { rows } = await db.query(
     `SELECT transaction_pin_hash, pin_failed_attempts, pin_locked_until
      FROM users WHERE id = $1`,
