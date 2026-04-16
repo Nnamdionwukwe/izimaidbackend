@@ -759,3 +759,191 @@ export async function sendDocumentReviewedEmail(
     `),
   });
 }
+
+// ADD to bottom of src/utils/mailer.js:
+
+export async function sendSubscriptionConfirmationEmail(
+  user,
+  plan,
+  subscription,
+) {
+  return sendEmail({
+    to: user.email,
+    subject: `${plan.display_name} subscription activated — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">Subscription Activated 🎉</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your <strong>${plan.display_name}</strong> subscription is now active.
+      </p>
+      ${table(
+        row("Plan", plan.display_name, false),
+        row(
+          "Price",
+          `${subscription.currency} ${Number(subscription.amount).toLocaleString()}/${subscription.interval}`,
+          true,
+        ),
+        row(
+          "Started",
+          new Date(subscription.current_period_start).toDateString(),
+          false,
+        ),
+        row(
+          "Next billing",
+          new Date(subscription.current_period_end).toDateString(),
+          true,
+        ),
+        row("Status", "Active ✓", false),
+      )}
+      <p style="color:#475569;font-size:14px">
+        <strong>Your benefits:</strong>
+      </p>
+      <ul style="color:#475569;font-size:14px;line-height:1.8">
+        ${(plan.features || []).map((f) => `<li>${f}</li>`).join("")}
+      </ul>
+      ${btn("Go to Dashboard", `${FRONTEND}/dashboard`)}
+    `),
+  });
+}
+
+export async function sendSubscriptionRenewalEmail(
+  user,
+  plan,
+  subscription,
+  invoice,
+) {
+  return sendEmail({
+    to: user.email,
+    subject: `Subscription renewed — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">Subscription Renewed ✅</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your <strong>${plan.display_name}</strong> subscription has been renewed.
+      </p>
+      ${table(
+        row("Plan", plan.display_name, false),
+        row(
+          "Amount charged",
+          `${invoice.currency} ${Number(invoice.amount).toLocaleString()}`,
+          true,
+        ),
+        row(
+          "Period",
+          `${new Date(invoice.period_start).toDateString()} → ${new Date(invoice.period_end).toDateString()}`,
+          false,
+        ),
+        row("Status", "Active ✓", true),
+      )}
+      ${btn("View Subscription", `${FRONTEND}/settings/subscription`)}
+    `),
+  });
+}
+
+export async function sendSubscriptionCancelledEmail(user, plan, subscription) {
+  const endDate = new Date(subscription.current_period_end).toDateString();
+  return sendEmail({
+    to: user.email,
+    subject: `Subscription cancelled — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#dc2626;margin:0 0 8px">Subscription Cancelled</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your <strong>${plan.display_name}</strong> subscription
+        has been cancelled.
+        ${
+          subscription.cancel_at_period_end
+            ? `You'll continue to have access until <strong>${endDate}</strong>.`
+            : "Your access has ended immediately."
+        }
+      </p>
+      ${
+        subscription.cancellation_reason
+          ? `<p style="color:#475569"><strong>Reason:</strong> ${subscription.cancellation_reason}</p>`
+          : ""
+      }
+      <p style="color:#94a3b8;font-size:13px">
+        We're sorry to see you go. You can resubscribe anytime.
+      </p>
+      ${btn("Resubscribe", `${FRONTEND}/pricing`)}
+    `),
+  });
+}
+
+export async function sendSubscriptionExpiredEmail(user, plan) {
+  return sendEmail({
+    to: user.email,
+    subject: `Subscription expired — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#dc2626;margin:0 0 8px">Subscription Expired</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your <strong>${plan.display_name}</strong>
+        subscription has expired.
+        Renew now to keep your benefits.
+      </p>
+      ${btn("Renew Now", `${FRONTEND}/pricing`, "#16a34a")}
+    `),
+  });
+}
+
+export async function sendSubscriptionPaymentFailedEmail(user, plan, invoice) {
+  return sendEmail({
+    to: user.email,
+    subject: `Payment failed — ${APP_NAME} subscription`,
+    html: wrap(`
+      <h2 style="color:#dc2626;margin:0 0 8px">Payment Failed ⚠️</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, we couldn't process your payment for
+        <strong>${plan.display_name}</strong>.
+      </p>
+      ${table(
+        row(
+          "Amount",
+          `${invoice.currency} ${Number(invoice.amount).toLocaleString()}`,
+          false,
+        ),
+        row("Reason", invoice.failure_reason || "Card declined", true),
+      )}
+      <p style="color:#475569;font-size:14px">
+        Please update your payment method to avoid losing access.
+      </p>
+      ${btn("Update Payment", `${FRONTEND}/settings/subscription`, "#dc2626")}
+    `),
+  });
+}
+
+export async function sendTrialEndingEmail(user, plan, daysLeft) {
+  return sendEmail({
+    to: user.email,
+    subject: `Your free trial ends in ${daysLeft} day${daysLeft !== 1 ? "s" : ""} — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">Trial Ending Soon ⏰</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your free trial of <strong>${plan.display_name}</strong>
+        ends in <strong>${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.
+      </p>
+      <p style="color:#475569">
+        Subscribe now to keep your benefits and avoid interruption.
+      </p>
+      ${btn("Subscribe Now", `${FRONTEND}/pricing`)}
+    `),
+  });
+}
+
+export async function sendProBadgeActivatedEmail(maid) {
+  return sendEmail({
+    to: maid.email,
+    subject: `Verified Pro badge activated — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">You're a Verified Pro! 🏅</h2>
+      <p style="color:#475569">
+        Hi ${maid.name}, your Verified Pro badge is now active on your profile.
+        Customers can see you're verified and trustworthy.
+      </p>
+      <ul style="color:#475569;font-size:14px;line-height:1.8">
+        <li>✅ Verified Pro badge on your profile</li>
+        <li>✅ Priority listing in customer searches</li>
+        <li>✅ 20% more visibility on the platform</li>
+        <li>✅ Trust badge on all your bookings</li>
+      </ul>
+      ${btn("View Your Profile", `${FRONTEND}/maid/profile`)}
+    `),
+  });
+}

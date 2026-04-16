@@ -1,56 +1,81 @@
+// src/routes/admin.js
 import { Router } from "express";
-import {
-  listUsers,
-  updateUser,
-  deleteUser,
-  listBookings,
-  getStats,
-} from "../controllers/admin.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import {
+  // Dashboard
+  getStats,
+  getRevenueReport,
+  getFinancialOverview,
+  // Users
+  listUsers,
+  getUser,
+  updateUser,
+  banUser,
+  unbanUser,
+  deleteUser,
+  impersonateUser,
+  // Bookings
+  listBookings,
+  getBooking,
+  adminUpdateBookingStatus,
+  // Maids
+  listMaids,
+  updateMaid,
+  // Documents
+  listPendingDocuments,
+  reviewDocument,
+  // SOS
+  getSOSAlerts,
+  resolveSOSAlert,
+  // Settings
+  getPlatformSettings,
+  updatePlatformSetting,
+  // Audit
+  getAuditLog,
+  // Support
+  getSupportOverview,
+} from "../controllers/admin.js";
 
 const router = Router();
+const admin = [requireAuth, requireRole("admin")];
 
-// ── Users Routes ──────────────────────────────────────────────────────────────
-/**
- * GET /api/admin/users
- * List all users with optional filtering by role
- * Query: page, limit, role
- * Auth: Admin only
- */
-router.get("/users", requireAuth, requireRole("admin"), listUsers);
+// ── Dashboard ─────────────────────────────────────────────────────────
+router.get("/stats", ...admin, getStats);
+router.get("/revenue", ...admin, getRevenueReport);
+router.get("/financial", ...admin, getFinancialOverview);
+router.get("/support-overview", ...admin, getSupportOverview);
 
-/**
- * PATCH /api/admin/users/:id
- * Update user (role, is_active status)
- * Body: { role?, is_active? }
- * Auth: Admin only
- */
-router.patch("/users/:id", requireAuth, requireRole("admin"), updateUser);
+// ── Users ─────────────────────────────────────────────────────────────
+router.get("/users", ...admin, listUsers);
+router.get("/users/:id", ...admin, getUser);
+router.patch("/users/:id", ...admin, updateUser);
+router.post("/users/:id/ban", ...admin, banUser);
+router.post("/users/:id/unban", ...admin, unbanUser);
+router.delete("/users/:id", ...admin, deleteUser);
+router.post("/users/:id/impersonate", ...admin, impersonateUser);
 
-/**
- * DELETE /api/admin/users/:id
- * Delete user and handle related data
- * Cascades: maid profiles, bookings, reviews, payments
- * Auth: Admin only
- */
-router.delete("/users/:id", requireAuth, requireRole("admin"), deleteUser);
+// ── Bookings ──────────────────────────────────────────────────────────
+router.get("/bookings", ...admin, listBookings);
+router.get("/bookings/:id", ...admin, getBooking);
+router.patch("/bookings/:id/status", ...admin, adminUpdateBookingStatus);
 
-// ── Bookings Routes ───────────────────────────────────────────────────────────
-/**
- * GET /api/admin/bookings
- * List all bookings with optional filtering by status
- * Query: page, limit, status
- * Auth: Admin only
- */
-router.get("/bookings", requireAuth, requireRole("admin"), listBookings);
+// ── Maids ─────────────────────────────────────────────────────────────
+router.get("/maids", ...admin, listMaids);
+router.patch("/maids/:id", ...admin, updateMaid);
 
-// ── Stats Routes ──────────────────────────────────────────────────────────────
-/**
- * GET /api/admin/stats
- * Get dashboard statistics
- * Returns: users by role, bookings by status, total revenue
- * Auth: Admin only
- */
-router.get("/stats", requireAuth, requireRole("admin"), getStats);
+// ── Maid documents ────────────────────────────────────────────────────
+router.get("/documents", ...admin, listPendingDocuments);
+router.patch("/documents/:docId/review", ...admin, reviewDocument);
+
+// ── SOS ───────────────────────────────────────────────────────────────
+router.get("/sos", ...admin, getSOSAlerts);
+router.patch("/sos/:alertId/resolve", ...admin, resolveSOSAlert);
+
+// ── Platform settings ─────────────────────────────────────────────────
+router.get("/settings", ...admin, getPlatformSettings);
+router.patch("/settings/:key", ...admin, updatePlatformSetting);
+
+// ── Audit log ─────────────────────────────────────────────────────────
+router.get("/audit", ...admin, getAuditLog);
 
 export default router;
