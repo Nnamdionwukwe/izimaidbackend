@@ -5,6 +5,81 @@ import {
   sendWithdrawalAdminAlertEmail,
 } from "../utils/mailer.js";
 import { notify, notifyAdmins } from "../utils/notify.js";
+import crypto from "crypto";
+
+async function checkTransactionPin(db, userId, pin, ip) {
+  const { rows } = await db.query(
+    `SELECT transaction_pin_hash, pin_failed_attempts, pin_locked_until
+     FROM users WHERE id = $1`,
+    [userId],
+  );
+
+  if (!rows.length) throw { status: 404, message: "user not found" };
+
+  const user = rows[0];
+
+  if (!user.transaction_pin_hash) {
+    throw {
+      status: 400,
+      message:
+        "transaction PIN not set. Please set a PIN in Settings before withdrawing.",
+      code: "PIN_NOT_SET",
+    };
+  }
+
+  if (user.pin_locked_until && new Date(user.pin_locked_until) > new Date()) {
+    const mins = Math.ceil(
+      (new Date(user.pin_locked_until) - Date.now()) / 60000,
+    );
+    throw {
+      status: 429,
+      message: `PIN locked. Try again in ${mins} minute(s).`,
+      locked: true,
+    };
+  }
+
+  const [salt, hash] = user.transaction_pin_hash.split(":");
+  const valid = await new Promise((resolve, reject) => {
+    crypto.scrypt(pin, salt, 32, (err, derived) => {
+      if (err) reject(err);
+      else resolve(derived.toString("hex") === hash);
+    });
+  });
+
+  // Log attempt
+  await db.query(
+    `INSERT INTO pin_attempts (user_id, success, ip_address) VALUES ($1, $2, $3)`,
+    [userId, valid, ip || "unknown"],
+  );
+
+  if (!valid) {
+    const newAttempts = (user.pin_failed_attempts || 0) + 1;
+    const shouldLock = newAttempts >= 5;
+    await db.query(
+      `UPDATE users SET pin_failed_attempts = $1, pin_locked_until = $2 WHERE id = $3`,
+      [
+        shouldLock ? 0 : newAttempts,
+        shouldLock ? new Date(Date.now() + 30 * 60000) : null,
+        userId,
+      ],
+    );
+    const left = 5 - newAttempts;
+    throw {
+      status: 401,
+      message: shouldLock
+        ? "Too many failed attempts. PIN locked for 30 minutes."
+        : `Incorrect PIN. ${left} attempt(s) remaining.`,
+      attempts_left: left,
+      locked: shouldLock,
+    };
+  }
+
+  // Reset on success
+  await db.query(
+    `UPDATE users SET pin_failed_attempts = 0, pin_locked_until = null WHERE id = $1`,
+    [userId],
+  );
+}
 
 // ── Fee calculator ────────────────────────────────────────────────────
 function calcWithdrawalFee(amount, currency, method) {

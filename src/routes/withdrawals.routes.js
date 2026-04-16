@@ -17,6 +17,10 @@ import {
 
 const router = Router();
 
+// ── Nigerian bank helpers (public) ────────────────────────────────────
+router.get("/ng-banks", getNGBanks);
+router.post("/ng-banks/verify", requireAuth, verifyNGBankAccount);
+
 // ── Maid ──────────────────────────────────────────────────────────────
 router.get("/wallet", requireAuth, requireRole("maid"), getWallet);
 router.get(
@@ -26,8 +30,14 @@ router.get(
   getWalletHistory,
 );
 router.get("/", requireAuth, requireRole("maid"), getMyWithdrawals);
-router.post("/", requireAuth, requireRole("maid"), requestWithdrawal);
+router.post("/", requireAuth, requireRole("maid"), requestWithdrawal); // requires transaction_pin in body
 router.patch("/:id/cancel", requireAuth, requireRole("maid"), cancelWithdrawal);
+router.post(
+  "/preference",
+  requireAuth,
+  requireRole("maid"),
+  saveWithdrawalPreference,
+);
 
 // ── Admin ─────────────────────────────────────────────────────────────
 router.get("/admin", requireAuth, requireRole("admin"), adminListWithdrawals);
@@ -43,15 +53,5 @@ router.post(
   requireRole("admin"),
   adminAutoProcess,
 );
-
-// ── Nigerian bank helpers (public — needed on withdrawal form) ──────
-router.get("/ng-banks", getNGBanks); // list all NG banks
-router.post("/ng-banks/verify", requireAuth, verifyNGBankAccount); // verify account
-router.post(
-  "/preference",
-  requireAuth,
-  requireRole("maid"),
-  saveWithdrawalPreference,
-); // save preference
 
 export default router;
