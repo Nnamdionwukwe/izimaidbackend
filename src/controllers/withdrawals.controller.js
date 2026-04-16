@@ -225,7 +225,8 @@ export const requestWithdrawal = async (req, res) => {
   const {
     amount,
     currency = "NGN",
-    method, // 'bank_transfer','wire_transfer','mobile_money','crypto','paypal','wise','flutterwave'
+    method,
+    transaction_pin,
 
     // Bank transfer (local)
     bank_name,
@@ -272,6 +273,7 @@ export const requestWithdrawal = async (req, res) => {
     "flutterwave",
   ];
 
+  // ── Basic validation ──────────────────────────────────────────────
   if (!amount || !method) {
     return res.status(400).json({ error: "amount and method are required" });
   }
@@ -288,7 +290,7 @@ export const requestWithdrawal = async (req, res) => {
     });
   }
 
-  // Validate method-specific required fields
+  // ── Method-specific field validation ─────────────────────────────
   const methodValidation = {
     bank_transfer: () => bank_name && account_number && account_name,
     wire_transfer: () => (swift_code || iban) && account_name,
@@ -305,6 +307,33 @@ export const requestWithdrawal = async (req, res) => {
       .json({ error: `missing required fields for ${method}` });
   }
 
+  // ── Transaction PIN check — must pass BEFORE any DB writes ───────
+  if (!transaction_pin) {
+    return res.status(400).json({
+      error: "transaction_pin is required",
+      code: "PIN_REQUIRED",
+      message:
+        "Enter your 4–6 digit transaction PIN to confirm this withdrawal.",
+    });
+  }
+
+  const pinIp =
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket?.remoteAddress ||
+    "unknown";
+
+  try {
+    await checkTransactionPin(req.db, req.user.id, transaction_pin, pinIp);
+  } catch (pinErr) {
+    return res.status(pinErr.status || 401).json({
+      error: pinErr.message,
+      code: pinErr.code || "PIN_ERROR",
+      locked: pinErr.locked || false,
+      attempts_left: pinErr.attempts_left,
+    });
+  }
+  // ── PIN verified ─────────────────────────────────────────────────
+
   try {
     const wallet = await ensureWallet(req.db, req.user.id);
 
@@ -316,7 +345,7 @@ export const requestWithdrawal = async (req, res) => {
       });
     }
 
-    // Check no pending withdrawal already
+    // Block if another withdrawal is already in flight
     const { rows: pending } = await req.db.query(
       `SELECT id FROM withdrawals
        WHERE maid_id = $1 AND status IN ('pending','processing')`,
@@ -332,7 +361,7 @@ export const requestWithdrawal = async (req, res) => {
     const fee = calcWithdrawalFee(Number(amount), currency, method);
     const netAmount = Math.max(0, Number(amount) - fee);
 
-    // Deduct from wallet immediately (hold in pending)
+    // Deduct from available, hold in pending
     const newAvailable = Number(wallet.available) - Number(amount);
     const newPending = Number(wallet.pending) + Number(amount);
 
@@ -389,46 +418,6 @@ export const requestWithdrawal = async (req, res) => {
       ],
     );
 
-    // FIND in requestWithdrawal — fetch maid name from DB first:
-    // ADD this BEFORE the notify() call:
-    const { rows: maidInfo } = await req.db.query(
-      `SELECT name, email FROM users WHERE id = $1`,
-      [req.user.id],
-    );
-    const maidName = maidInfo[0]?.name || "Maid";
-    const maidEmail = maidInfo[0]?.email || req.user.email;
-
-    // THEN replace the notify call:
-    await notify(req.db, {
-      userId: req.user.id,
-      type: "withdrawal_requested",
-      title: "Withdrawal request submitted",
-      body: `Your withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")} is being reviewed.`,
-      data: { withdrawal_id: rows[0].id, amount, currency, method },
-      sendMail: () =>
-        sendWithdrawalRequestedEmail(
-          { name: maidName, email: maidEmail },
-          rows[0],
-        ),
-    });
-
-    // In-app + email — all admins
-    const { rows: admins } = await req.db.query(
-      `SELECT id, name, email FROM users WHERE role = 'admin' AND is_active = true`,
-    );
-    await notifyAdmins(req.db, {
-      type: "withdrawal_admin_alert",
-      title: "New withdrawal request",
-      body: `A maid has requested a withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
-      data: { withdrawal_id: rows[0].id },
-    });
-    // Email admins
-    sendWithdrawalAdminAlertEmail(
-      admins,
-      { name: maidName, email: maidEmail }, // ← correct
-      rows[0],
-    ).catch(console.error);
-
     // Log wallet transaction
     await req.db.query(
       `INSERT INTO wallet_transactions
@@ -445,6 +434,46 @@ export const requestWithdrawal = async (req, res) => {
         `Withdrawal request via ${method}`,
       ],
     );
+
+    // Fetch maid name for notifications
+    const { rows: maidInfo } = await req.db.query(
+      `SELECT name, email FROM users WHERE id = $1`,
+      [req.user.id],
+    );
+    const maidName = maidInfo[0]?.name || "Maid";
+    const maidEmail = maidInfo[0]?.email || req.user.email;
+
+    // In-app + email — maid
+    await notify(req.db, {
+      userId: req.user.id,
+      type: "withdrawal_requested",
+      title: "Withdrawal request submitted",
+      body: `Your withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")} is being reviewed.`,
+      data: { withdrawal_id: rows[0].id, amount, currency, method },
+      sendMail: () =>
+        sendWithdrawalRequestedEmail(
+          { name: maidName, email: maidEmail },
+          rows[0],
+        ),
+    });
+
+    // In-app — all admins
+    await notifyAdmins(req.db, {
+      type: "withdrawal_admin_alert",
+      title: "New withdrawal request",
+      body: `${maidName} requested a withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
+      data: { withdrawal_id: rows[0].id },
+    });
+
+    // Email admins
+    const { rows: admins } = await req.db.query(
+      `SELECT id, name, email FROM users WHERE role = 'admin' AND is_active = true`,
+    );
+    sendWithdrawalAdminAlertEmail(
+      admins,
+      { name: maidName, email: maidEmail },
+      rows[0],
+    ).catch(console.error);
 
     return res.status(201).json({
       message: "Withdrawal request submitted. Processing within 24 hours.",
