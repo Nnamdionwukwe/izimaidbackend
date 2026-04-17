@@ -76,7 +76,7 @@ const table = (...rows) => `
 // ══════════════════════════════════════════════════════════════════════
 
 export async function sendVerificationEmail(user, token) {
-  const link = `${FRONTEND}/verify-email?token=${token}`;
+  const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
   return sendEmail({
     to: user.email,
     subject: `Verify your ${APP_NAME} account`,
@@ -85,12 +85,12 @@ export async function sendVerificationEmail(user, token) {
       <p style="color:#475569;line-height:1.6">
         Thanks for signing up. Please verify your email address to activate your account.
       </p>
-      ${btn("Verify Email Address", link)}
+      ${btn("Verify Email Address", verifyUrl)}
       <p style="color:#94a3b8;font-size:13px">
         This link expires in <strong>24 hours</strong>.
         If you didn't create an account, ignore this email.
       </p>
-      <p style="color:#cbd5e1;font-size:11px;word-break:break-all">Or copy: ${link}</p>
+      <p style="color:#cbd5e1;font-size:11px;word-break:break-all">Or copy: ${verifyUrl}</p>
     `),
   });
 }
@@ -119,7 +119,7 @@ export async function sendNewLoginAlert(user, { ip, device }) {
 }
 
 export async function sendPasswordResetEmail(user, token) {
-  const link = `${FRONTEND}/reset-password?token=${token}`;
+  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
   return sendEmail({
     to: user.email,
     subject: `Reset your ${APP_NAME} password`,
@@ -128,7 +128,7 @@ export async function sendPasswordResetEmail(user, token) {
       <p style="color:#475569;line-height:1.6">
         Hi ${user.name}, click below to reset your password.
       </p>
-      ${btn("Reset Password", link)}
+      ${btn("Reset Password", resetUrl)}
       <p style="color:#94a3b8;font-size:13px">
         Expires in <strong>1 hour</strong>. Ignore if you didn't request this.
       </p>
@@ -136,23 +136,49 @@ export async function sendPasswordResetEmail(user, token) {
   });
 }
 
+// export async function sendWelcomeEmail(user) {
+//   const dashLink = `${FRONTEND}/${user.role === "maid" ? "maid" : "customer"}/dashboard`;
+//   return sendEmail({
+//     to: user.email,
+//     subject: `Welcome to ${APP_NAME} — your account is verified! 🎉`,
+//     html: wrap(`
+//       <h2 style="color:#1e293b;margin:0 0 8px">You're all set, ${user.name}! 🎉</h2>
+//       <p style="color:#475569;line-height:1.6">
+//         Your email has been verified and your ${APP_NAME} account is active.
+//         ${
+//           user.role === "maid"
+//             ? "Complete your profile to start receiving bookings."
+//             : "Browse available maids and book your first cleaning service."
+//         }
+//       </p>
+//       ${btn("Go to Dashboard", dashLink)}
+//     `),
+//   });
+// }
+
 export async function sendWelcomeEmail(user) {
-  const dashLink = `${FRONTEND}/${user.role === "maid" ? "maid" : "customer"}/dashboard`;
   return sendEmail({
     to: user.email,
-    subject: `Welcome to ${APP_NAME} — your account is verified! 🎉`,
-    html: wrap(`
-      <h2 style="color:#1e293b;margin:0 0 8px">You're all set, ${user.name}! 🎉</h2>
-      <p style="color:#475569;line-height:1.6">
-        Your email has been verified and your ${APP_NAME} account is active.
-        ${
-          user.role === "maid"
-            ? "Complete your profile to start receiving bookings."
-            : "Browse available maids and book your first cleaning service."
-        }
-      </p>
-      ${btn("Go to Dashboard", dashLink)}
-    `),
+    subject: `Welcome to ${process.env.APP_NAME || "Deusizi Sparkle"}! 🎉`,
+    html: `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px;background:#faf7f4;border-radius:12px;">
+        <h1 style="font-size:28px;color:#1a1208;margin:0 0 8px;">Welcome, ${user.name}! 👋</h1>
+        <p style="color:#8a7b6a;font-size:15px;line-height:1.6;">
+          Your email has been verified. Your account is ready.
+        </p>
+        <p style="color:#8a7b6a;font-size:15px;line-height:1.6;">
+          You can now book trusted cleaning professionals near you.
+        </p>
+        <a href="${process.env.FRONTEND_URL}"
+           style="display:inline-block;margin-top:24px;padding:14px 28px;background:#1a1208;color:#f5ede0;border-radius:8px;text-decoration:none;font-size:15px;font-weight:500;">
+          Get started →
+        </a>
+        <hr style="margin:32px 0;border:none;border-top:1px solid #e0d8ce;" />
+        <p style="color:#b5a898;font-size:12px;">
+          Deusizi Sparkle · Abuja, Lagos, Nigeria
+        </p>
+      </div>
+    `,
   });
 }
 
