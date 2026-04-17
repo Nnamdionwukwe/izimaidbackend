@@ -534,6 +534,23 @@ export const getMaidAvailability = async (req, res) => {
   }
 };
 
+// ADD this new function alongside getMaidAvailability:
+export const getMyAvailability = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT id, day_of_week, start_time, end_time, is_active
+       FROM maid_availability
+       WHERE maid_id = $1          -- ← req.user.id, not req.params.id
+       ORDER BY day_of_week ASC, start_time ASC`,
+      [req.user.id],
+    );
+    return res.json({ availability: rows });
+  } catch (err) {
+    console.error("[maids.controller/getMyAvailability]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
 // ─── Set maid availability (replace all slots) ──────────────────────
 // Body: { slots: [{ day_of_week: 1, start_time: "09:00", end_time: "17:00" }] }
 export const setMaidAvailability = async (req, res) => {

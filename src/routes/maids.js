@@ -14,6 +14,7 @@ import {
   // ── new ──
   getNearbyMaids,
   getMaidAvailability,
+  getMyAvailability,
   setMaidAvailability,
   uploadMaidDocument,
   getMaidDocuments,
@@ -28,8 +29,10 @@ const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB for documents
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed"), false);
+    const allowed =
+      file.mimetype.startsWith("image/") || file.mimetype === "application/pdf";
+    if (allowed) cb(null, true);
+    else cb(new Error("Only image or PDF files are allowed"), false);
   },
 });
 
@@ -73,7 +76,7 @@ router.post(
   upload.single("document"),
   uploadMaidDocument,
 ); // ← new
-router.get("/my/availability", requireAuth, getMaidAvailability); // ← new (own)
+router.get("/my/availability", requireAuth, getMyAvailability); // ← was getMaidAvailability// ← new (own)
 router.put("/my/availability", requireAuth, setMaidAvailability); // ← new
 
 // ─── Public ──────────────────────────────────────────────────
