@@ -205,7 +205,6 @@ export const getWallet = async (req, res) => {
   try {
     const wallet = await ensureWallet(req.db, req.user.id);
 
-    // Also get recent transactions
     const { rows: txns } = await req.db.query(
       `SELECT * FROM wallet_transactions
        WHERE maid_id = $1
@@ -213,7 +212,18 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
-    return res.json({ wallet, recent_transactions: txns });
+    // ← ADD THIS: fetch saved bank preference
+    const { rows: bankRows } = await req.db.query(
+      `SELECT bank_name, account_number, account_name, bank_code, country
+       FROM maid_bank_details WHERE maid_id = $1 LIMIT 1`,
+      [req.user.id],
+    );
+
+    return res.json({
+      wallet,
+      recent_transactions: txns,
+      preference: bankRows[0] || null, // ← ADD THIS
+    });
   } catch (err) {
     console.error("[withdrawals/getWallet]", err);
     return res.status(500).json({ error: "internal server error" });
