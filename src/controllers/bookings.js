@@ -33,9 +33,7 @@ export const createBooking = async (req, res) => {
     duration_hours,
     address,
     notes,
-    rate_type = "hourly", // 'hourly','daily','weekly','monthly','custom'
-    is_recurring = false,
-    recurrence_rule = null,
+    rate_type = "hourly",
   } = req.body;
 
   if (!maid_id || !service_date || !duration_hours || !address) {
@@ -52,26 +50,27 @@ export const createBooking = async (req, res) => {
   }
 
   try {
-    // ── Fetch maid profile with all rates ─────────────────────────
     const { rows: maidRows } = await req.db.query(
       `SELECT mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
-              mp.rate_monthly, mp.rate_custom, mp.is_available, mp.currency,
-              u.is_active, u.name as maid_name, u.email as maid_email
+              mp.rate_monthly, mp.rate_custom, mp.is_available,
+              u.is_active, u.name AS maid_name, u.email AS maid_email
        FROM maid_profiles mp
        JOIN users u ON u.id = mp.user_id
        WHERE mp.user_id = $1`,
       [maid_id],
     );
 
-    if (!maidRows.length)
+    if (!maidRows.length) {
       return res.status(404).json({ error: "maid not found" });
+    }
 
     const maid = maidRows[0];
+
     if (!maid.is_available || !maid.is_active) {
       return res.status(409).json({ error: "maid is not available" });
     }
 
-    // ── Calculate total based on rate_type ────────────────────────
+    // ── Calculate total ───────────────────────────────────────────
     let rate = 0;
     switch (rate_type) {
       case "hourly":
@@ -87,7 +86,6 @@ export const createBooking = async (req, res) => {
         rate = Number(maid.rate_monthly || 0);
         break;
       case "custom":
-        // rate_custom is jsonb: { price: 5000, description: "Move-in clean" }
         rate = Number(maid.rate_custom?.price || 0);
         break;
     }
@@ -100,39 +98,25 @@ export const createBooking = async (req, res) => {
 
     const total_amount = rate * Number(duration_hours);
 
+    // ── Insert — only columns that exist in the bookings table ────
     const { rows } = await req.db.query(
       `INSERT INTO bookings
-         (customer_id, maid_id, service_date, duration_hours, address, notes,
-          total_amount, status, rate_type, is_recurring, recurrence_rule)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'awaiting_payment',$8,$9,$10)
+         (customer_id, maid_id, service_date, duration_hours,
+          address, notes, total_amount, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment')
        RETURNING *`,
       [
         req.user.id,
         maid_id,
         service_date,
-        duration_hours,
+        Number(duration_hours),
         address,
         notes || null,
         total_amount,
-        rate_type,
-        is_recurring,
-        recurrence_rule,
       ],
     );
 
-    const booking = rows[0];
-
-    // Fetch customer name for email
-    const { rows: custRows } = await req.db.query(
-      `SELECT name, email FROM users WHERE id = $1`,
-      [req.user.id],
-    );
-
-    // Fire-and-forget — don't block response
-    // Maid won't see it yet (awaiting_payment) but customer gets a receipt
-    // We notify maid after payment + admin approval (in payments controller)
-
-    return res.status(201).json({ booking });
+    return res.status(201).json({ booking: rows[0] });
   } catch (err) {
     console.error("[bookings/createBooking]", err);
     return res.status(500).json({ error: "internal server error" });
@@ -810,6 +794,113 @@ export const submitReview = async (req, res) => {
     return res.status(201).json({ review: rows[0] });
   } catch (err) {
     console.error("[bookings/submitReview]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Update booking status ─────────────────────────────────────────────
+export const updateBookingStatus = async (req, res) => {
+  const { id } = req.params;
+  const { status, declined_reason, declined_by } = req.body;
+
+  // ── Valid transitions per role ────────────────────────────────────
+  const MAID_ALLOWED = ["confirmed", "declined", "in_progress", "completed"];
+  const CUSTOMER_ALLOWED = ["cancelled"];
+  const ADMIN_ALLOWED = [
+    "confirmed",
+    "declined",
+    "in_progress",
+    "completed",
+    "cancelled",
+  ];
+
+  const allowedStatuses =
+    req.user.role === "maid"
+      ? MAID_ALLOWED
+      : req.user.role === "customer"
+        ? CUSTOMER_ALLOWED
+        : ADMIN_ALLOWED;
+
+  if (!status || !allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      error: `status must be one of: ${allowedStatuses.join(", ")}`,
+    });
+  }
+
+  try {
+    // ── Fetch booking to verify ownership + current state ─────────
+    const { rows: existing } = await req.db.query(
+      `SELECT b.*,
+              c.name AS customer_name, c.email AS customer_email,
+              m.name AS maid_name,     m.email AS maid_email
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE b.id = $1`,
+      [id],
+    );
+
+    if (!existing.length) {
+      return res.status(404).json({ error: "booking not found" });
+    }
+
+    const booking = existing[0];
+
+    // ── Ownership check ───────────────────────────────────────────
+    if (req.user.role === "maid" && booking.maid_id !== req.user.id) {
+      return res.status(403).json({ error: "not your booking" });
+    }
+    if (req.user.role === "customer" && booking.customer_id !== req.user.id) {
+      return res.status(403).json({ error: "not your booking" });
+    }
+
+    // ── Guard illegal transitions ─────────────────────────────────
+    const TERMINAL = ["completed", "cancelled", "declined"];
+    if (TERMINAL.includes(booking.status)) {
+      return res.status(409).json({
+        error: `booking is already ${booking.status} and cannot be changed`,
+      });
+    }
+
+    // Customers can only cancel pending / confirmed bookings
+    if (
+      req.user.role === "customer" &&
+      !["pending", "confirmed", "awaiting_payment"].includes(booking.status)
+    ) {
+      return res.status(409).json({
+        error: "you can only cancel a booking that has not started",
+      });
+    }
+
+    // ── Build dynamic UPDATE ──────────────────────────────────────
+    const fields = ["status = $2", "updated_at = now()"];
+    const params = [id, status];
+
+    if (status === "declined" && declined_reason) {
+      params.push(declined_reason);
+      fields.push(`notes = $${params.length}`); // store reason in notes
+    }
+
+    const { rows } = await req.db.query(
+      `UPDATE bookings
+       SET ${fields.join(", ")}
+       WHERE id = $1
+       RETURNING *`,
+      params,
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "booking not found" });
+    }
+
+    const updated = rows[0];
+
+    return res.json({
+      booking: updated,
+      message: `Booking ${status}`,
+    });
+  } catch (err) {
+    console.error("[bookings/updateBookingStatus]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };

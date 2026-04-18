@@ -17,6 +17,7 @@ import {
   setEmergencyContact,
   getEmergencyContacts,
   deleteEmergencyContact,
+  updateBookingStatus,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -53,5 +54,6 @@ router.post("/:id/location", requireAuth, requireRole("maid"), updateLocation);
 router.get("/:id/location", requireAuth, getJobLocation);
 router.post("/:id/sos", requireAuth, triggerSOS);
 router.post("/:id/video-call", requireAuth, initiateVideoCall);
+router.patch("/:id/status", requireAuth, updateBookingStatus);
 
 export default router;
