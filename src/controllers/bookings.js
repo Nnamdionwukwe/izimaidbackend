@@ -171,13 +171,21 @@ export const listBookings = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `SELECT b.*,
-              c.name as customer_name, c.avatar as customer_avatar,
-              m.name as maid_name, m.avatar as maid_avatar,
-              p.status as payment_status
+      `SELECT
+         b.id, b.status, b.service_date, b.duration_hours,
+         b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
+         c.name   AS customer_name,
+         c.avatar AS customer_avatar,
+         m.id     AS maid_id,
+         m.name   AS maid_name,
+         m.avatar AS maid_avatar,
+         mp.currency AS maid_currency,
+         p.status    AS payment_status,
+         p.currency  AS payment_currency
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
        JOIN users m ON m.id = b.maid_id
+       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
        LEFT JOIN payments p ON p.booking_id = b.id
        ${where}
        ORDER BY b.created_at DESC
