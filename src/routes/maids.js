@@ -21,6 +21,7 @@ import {
   adminReviewDocument,
 } from "../controllers/maids.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { uploadMediaToCloudinary } from "../utils/cloudinary-utils.js";
 
 const router = express.Router();
 
@@ -86,4 +87,24 @@ router.get("/:id", getMaid);
 router.get("/:id/reviews", getMaidReviews);
 router.get("/:id/availability", getMaidAvailability); // ← new: public view
 
+// In src/routes/maids.js — add alongside the existing avatar route
+router.post(
+  "/upload-proof",
+  requireAuth,
+  upload.single("file"),
+  async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+    try {
+      const result = await uploadMediaToCloudinary(
+        req.file.buffer,
+        "image",
+        "deusizi/payment_proofs",
+      );
+      return res.json({ url: result.url });
+    } catch (err) {
+      console.error("[upload-proof]", err);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  },
+);
 export default router;

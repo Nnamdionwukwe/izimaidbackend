@@ -27,13 +27,16 @@ async function fetchBookingWithUsers(db, bookingId) {
 
 // ─── Create booking ───────────────────────────────────────────────────
 export const createBooking = async (req, res) => {
+  // ADD duration_qty to the destructuring:
   const {
     maid_id,
     service_date,
     duration_hours,
+    duration_qty, // ← ADD: raw count of days/weeks/months
     address,
     notes,
     rate_type = "hourly",
+    total_override,
   } = req.body;
 
   if (!maid_id || !service_date || !duration_hours || !address) {
@@ -71,6 +74,7 @@ export const createBooking = async (req, res) => {
     }
 
     // ── Calculate total ───────────────────────────────────────────
+    // ── Calculate total ───────────────────────────────────────────
     let rate = 0;
     switch (rate_type) {
       case "hourly":
@@ -86,18 +90,36 @@ export const createBooking = async (req, res) => {
         rate = Number(maid.rate_monthly || 0);
         break;
       case "custom":
-        rate = Number(maid.rate_custom?.price || 0);
+        // rate_custom is JSONB { "Deep Clean": 5000 } — take first value if no label match
+        if (maid.rate_custom && typeof maid.rate_custom === "object") {
+          const values = Object.values(maid.rate_custom);
+          rate = Number(values[0] || 0);
+        }
         break;
     }
 
-    if (rate === 0) {
-      return res.status(400).json({
-        error: `maid has not set a ${rate_type} rate`,
-      });
+    let total_amount;
+
+    if (total_override && Number(total_override) > 0) {
+      // Negotiated — exact agreed price
+      total_amount = Number(total_override);
+    } else {
+      if (rate === 0) {
+        return res.status(400).json({
+          error: `maid has not set a ${rate_type} rate`,
+        });
+      }
+
+      const qty = Number(duration_qty || 1);
+
+      // Hourly multiplies by hours; all others multiply by the raw unit count
+      if (rate_type === "hourly") {
+        total_amount = rate * Number(duration_hours);
+      } else {
+        // daily × days, weekly × weeks, monthly × months, custom × sessions
+        total_amount = rate * qty;
+      }
     }
-
-    const total_amount = rate * Number(duration_hours);
-
     // ── Insert — only columns that exist in the bookings table ────
     const { rows } = await req.db.query(
       `INSERT INTO bookings
