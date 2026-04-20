@@ -171,26 +171,25 @@ export const listBookings = async (req, res) => {
 
   try {
     const { rows } = await req.db.query(
-      `SELECT DISTINCT ON (b.id)
-   b.id, b.status, b.service_date, b.duration_hours,
-   b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
-   b.customer_id, b.maid_id,
-   c.name   AS customer_name,
-   c.avatar AS customer_avatar,
-   m.id     AS maid_id,
-   m.name   AS maid_name,
-   m.avatar AS maid_avatar,
-   mp.currency AS maid_currency,
-   p.status    AS payment_status,
-   p.currency  AS payment_currency
- FROM bookings b
- JOIN users c ON c.id = b.customer_id
- JOIN users m ON m.id = b.maid_id
- LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
- LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
- ${where}
- ORDER BY b.id, b.created_at DESC
- LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      `SELECT
+         b.id, b.status, b.service_date, b.duration_hours,
+         b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
+         c.name   AS customer_name,
+         c.avatar AS customer_avatar,
+         m.id     AS maid_id,
+         m.name   AS maid_name,
+         m.avatar AS maid_avatar,
+         mp.currency AS maid_currency,
+         p.status    AS payment_status,
+         p.currency  AS payment_currency
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+       LEFT JOIN payments p ON p.booking_id = b.id
+       ${where}
+       ORDER BY b.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
     return res.json({ bookings: rows });
