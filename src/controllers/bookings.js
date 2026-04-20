@@ -215,8 +215,8 @@ export const getBooking = async (req, res) => {
     let emergencyContacts = [];
     if (["confirmed", "in_progress"].includes(booking.status)) {
       const { rows: ec } = await req.db.query(
-        `SELECT ec.name, ec.phone, ec.relationship
-         FROM emergency_contacts ec
+        `SELECT ec.name, ec.phone, ec.email, ec.relationship
+ FROM emergency_contacts ec
          WHERE ec.user_id = $1
          ORDER BY ec.is_primary DESC`,
         // Show the OTHER party's emergency contacts
@@ -553,6 +553,33 @@ export const triggerSOS = async (req, res) => {
 
     const booking = bookingRows[0];
 
+    const { rows: customerEmergency } = await req.db.query(
+      `SELECT name, phone, email, relationship FROM emergency_contacts
+   WHERE user_id = $1 ORDER BY is_primary DESC`,
+      [booking.customer_id],
+    );
+    const { rows: maidEmergency } = await req.db.query(
+      `SELECT name, phone, email, relationship FROM emergency_contacts
+   WHERE user_id = $1 ORDER BY is_primary DESC`,
+      [booking.maid_id],
+    );
+
+    function ecHtml(contacts, label) {
+      if (!contacts.length)
+        return `<p><em>No ${label} emergency contacts on file.</em></p>`;
+      return contacts
+        .map(
+          (c) => `
+    <tr>
+      <td style="padding:6px 12px">${c.name}</td>
+      <td style="padding:6px 12px">${c.relationship}</td>
+      <td style="padding:6px 12px">${c.phone}</td>
+      <td style="padding:6px 12px">${c.email || "—"}</td>
+    </tr>`,
+        )
+        .join("");
+    }
+
     const { rows } = await req.db.query(
       `INSERT INTO sos_alerts (booking_id, triggered_by, lat, lng, address, message)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -580,20 +607,42 @@ export const triggerSOS = async (req, res) => {
         : booking.maid_name;
 
     const sosEmailHtml = `
-      <div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:32px">
-        <div style="background:#dc2626;padding:20px;border-radius:8px;margin-bottom:24px">
-          <h2 style="color:#fff;margin:0">🚨 SOS ALERT TRIGGERED</h2>
-        </div>
-        <p><strong>Triggered by:</strong> ${triggeredByName}</p>
-        <p><strong>Booking ID:</strong> ${booking.id}</p>
-        <p><strong>Customer:</strong> ${booking.customer_name}</p>
-        <p><strong>Maid:</strong> ${booking.maid_name}</p>
-        ${lat && lng ? `<p><strong>Location:</strong> <a href="https://maps.google.com/?q=${lat},${lng}">View on Google Maps</a></p>` : ""}
-        ${address ? `<p><strong>Address:</strong> ${address}</p>` : ""}
-        ${message ? `<p><strong>Message:</strong> ${message}</p>` : ""}
-        <p><strong>Time:</strong> ${new Date().toUTCString()}</p>
-      </div>
-    `;
+  <div style="font-family:sans-serif;max-width:580px;margin:0 auto;padding:32px">
+    <div style="background:#dc2626;padding:20px;border-radius:8px;margin-bottom:24px">
+      <h2 style="color:#fff;margin:0">🚨 SOS ALERT — DEUSIZI SPARKLE</h2>
+    </div>
+    <p><strong>Triggered by:</strong> ${triggeredByName}</p>
+    <p><strong>Booking ID:</strong> ${booking.id}</p>
+    <p><strong>Customer:</strong> ${booking.customer_name}</p>
+    <p><strong>Maid:</strong> ${booking.maid_name}</p>
+    ${lat && lng ? `<p><strong>Location:</strong> <a href="https://www.google.com/maps?q=${lat},${lng}">View on Google Maps (${lat.toFixed(5)}, ${lng.toFixed(5)})</a></p>` : ""}
+    ${address ? `<p><strong>Address:</strong> ${address}</p>` : ""}
+    ${message ? `<p><strong>Message:</strong> ${message}</p>` : ""}
+    <p><strong>Time:</strong> ${new Date().toUTCString()}</p>
+
+    <h3 style="margin-top:24px;color:#dc2626">👤 Customer Emergency Contacts</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr style="background:#f5f5f5">
+        <th style="padding:6px 12px;text-align:left">Name</th>
+        <th style="padding:6px 12px;text-align:left">Relationship</th>
+        <th style="padding:6px 12px;text-align:left">Phone</th>
+        <th style="padding:6px 12px;text-align:left">Email</th>
+      </tr>
+      ${ecHtml(customerEmergency, "customer")}
+    </table>
+
+    <h3 style="margin-top:24px;color:#dc2626">🧹 Maid Emergency Contacts</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <tr style="background:#f5f5f5">
+        <th style="padding:6px 12px;text-align:left">Name</th>
+        <th style="padding:6px 12px;text-align:left">Relationship</th>
+        <th style="padding:6px 12px;text-align:left">Phone</th>
+        <th style="padding:6px 12px;text-align:left">Email</th>
+      </tr>
+      ${ecHtml(maidEmergency, "maid")}
+    </table>
+  </div>
+`;
 
     const allRecipients = [
       { email: booking.customer_email, name: booking.customer_name },
@@ -689,7 +738,7 @@ export const initiateVideoCall = async (req, res) => {
       `SELECT * FROM bookings
        WHERE id = $1
          AND (customer_id = $2 OR maid_id = $2)
-         AND status = 'confirmed'`,
+         AND status IN ('confirmed', 'in_progress')`,
       [req.params.id, req.user.id],
     );
 
@@ -728,11 +777,20 @@ export const initiateVideoCall = async (req, res) => {
 
 // ─── Emergency contacts ───────────────────────────────────────────────
 export const setEmergencyContact = async (req, res) => {
-  const { name, phone, relationship = "other", is_primary = false } = req.body;
-
+  const {
+    name,
+    phone,
+    phone_country_code = "+234",
+    email,
+    relationship = "other",
+    is_primary = false,
+  } = req.body;
   if (!name || !phone) {
     return res.status(400).json({ error: "name and phone are required" });
   }
+  const fullPhone = phone.startsWith("+")
+    ? phone
+    : `${phone_country_code}${phone.replace(/^0/, "")}`;
 
   try {
     // If setting as primary, unset existing primary first
@@ -744,10 +802,9 @@ export const setEmergencyContact = async (req, res) => {
     }
 
     const { rows } = await req.db.query(
-      `INSERT INTO emergency_contacts (user_id, name, phone, relationship, is_primary)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [req.user.id, name, phone, relationship, is_primary],
+      `INSERT INTO emergency_contacts (user_id, name, phone, email, relationship, is_primary)
+   VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [req.user.id, name, fullPhone, email || null, relationship, is_primary],
     );
 
     return res.status(201).json({ contact: rows[0] });
