@@ -217,8 +217,8 @@ export const getBooking = async (req, res) => {
       const { rows: ec } = await req.db.query(
         `SELECT ec.name, ec.phone, ec.email, ec.relationship
  FROM emergency_contacts ec
-         WHERE ec.user_id = $1
-         ORDER BY ec.is_primary DESC`,
+ WHERE ec.user_id = $1
+ ORDER BY ec.is_primary DESC`,
         // Show the OTHER party's emergency contacts
         [
           req.user.id === booking.customer_id
