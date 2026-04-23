@@ -29,6 +29,7 @@ import notificationsRoutes from "./src/routes/notifications.routes.js";
 import withdrawalsRoutes from "./src/routes/withdrawals.routes.js";
 import subscriptionsRoutes from "./src/routes/subscriptions.routes.js";
 import earningsRouter from "./src/routes/earnings.routes.js";
+import walletRouter from "./src/routes/wallet.routes.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,6 +106,7 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/withdrawals", withdrawalsRoutes);
 app.use("/api/subscriptions", subscriptionsRoutes);
 app.use("/api/earnings", earningsRouter);
+app.use("/api/wallet", walletRouter);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {

@@ -285,7 +285,6 @@ export const updateStatus = async (req, res) => {
   }
 
   try {
-    // Build extra fields based on status
     let extraFields = "";
     let extraParams = [];
 
@@ -319,9 +318,43 @@ export const updateStatus = async (req, res) => {
         .json({ error: "booking not found or not authorized" });
     }
 
-    const booking = rows[0];
+    const booking = rows[0]; // ← booking defined HERE, AFTER the query
 
-    // ── Fetch both users for email notifications ───────────────────
+    // ── Credit maid wallet when booking completes ─────────────────
+    if (status === "completed") {
+      try {
+        const { creditMaidWallet } = await import("./wallet.controller.js");
+
+        // Get currency from payment or maid profile
+        const { rows: payRows } = await req.db.query(
+          `SELECT p.currency AS payment_currency, mp.currency AS maid_currency
+           FROM bookings b
+           LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
+           LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+           WHERE b.id = $1`,
+          [booking.id],
+        );
+        const currency =
+          payRows[0]?.payment_currency || payRows[0]?.maid_currency || "NGN";
+        const maidPayout = Number(booking.total_amount) * 0.9;
+
+        await creditMaidWallet(req.db, {
+          maidId: booking.maid_id,
+          currency,
+          amount: maidPayout,
+          description: `Booking payment`,
+          bookingId: booking.id,
+        });
+      } catch (walletErr) {
+        // Never crash the status update over wallet issues
+        console.error(
+          "[updateStatus] wallet credit failed:",
+          walletErr.message,
+        );
+      }
+    }
+
+    // ── Fetch both users for emails ───────────────────────────────
     const { rows: userRows } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.role FROM users u
        WHERE u.id = $1 OR u.id = $2`,
@@ -330,7 +363,6 @@ export const updateStatus = async (req, res) => {
     const customer = userRows.find((u) => u.id === booking.customer_id);
     const maid = userRows.find((u) => u.id === booking.maid_id);
 
-    // ── Send emails based on status ───────────────────────────────
     if (status === "confirmed" && customer && maid) {
       sendBookingConfirmation(customer, booking, maid).catch(console.error);
       sendNewBookingToMaid(maid, booking, customer).catch(console.error);

@@ -101,22 +101,31 @@ function calcFinalPrice(basePrice, discount, discountType) {
 // ──────────────────────────────────────────────────────────────────────
 
 // GET /api/subscriptions/plans
+// REPLACE the getPlans function with:
 export const getPlans = async (req, res) => {
-  const { role = "customer", currency = "NGN" } = req.query;
+  const { role = "customer", currency = "NGN", interval } = req.query;
 
   try {
+    const conditions = ["is_active = true", "target_role = $1"];
+    const params = [role];
+
+    if (interval) {
+      params.push(interval);
+      conditions.push(`interval = $${params.length}`);
+    }
+
     const { rows } = await req.db.query(
       `SELECT id, name, display_name, description, target_role,
               plan_type, interval, prices, features,
               bookings_per_month, discount_percent, priority_matching,
-              dedicated_support, badge, trial_days, is_featured, sort_order
+              dedicated_support, badge, trial_days, is_featured,
+              is_popular, sort_order
        FROM subscription_plans
-       WHERE is_active = true AND target_role = $1
+       WHERE ${conditions.join(" AND ")}
        ORDER BY sort_order ASC`,
-      [role],
+      params,
     );
 
-    // Add price for requested currency
     const plans = rows.map((p) => ({
       ...p,
       price: p.prices[currency] || p.prices["USD"] || 0,
@@ -129,7 +138,6 @@ export const getPlans = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
-
 // GET /api/subscriptions/my
 export const getMySubscription = async (req, res) => {
   try {
@@ -186,6 +194,7 @@ export const validatePromo = async (req, res) => {
     valid: true,
     discount_type: type,
     discount_value: discount,
+    discount_percent: type === "percent" ? discount : 0, // ← ADD this
     description: promo.description,
   });
 };
@@ -482,25 +491,47 @@ export const verifySubscriptionPayment = async (req, res) => {
     }
 
     // Fetch activated subscription
+    // In verifySubscriptionPayment, REPLACE the notify call after activateSubscription with:
+
     const sub = await getActiveSub(req.db, userId);
     const plan = await getPlan(req.db, planId);
-
-    // Get user for email
     const { rows: userRows } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [userId],
     );
+    const user = userRows[0];
 
+    // ── In-app + email notification ──
     await notify(req.db, {
       userId,
       type: "payment_received",
-      title: `${plan.display_name} subscription activated`,
+      title: `${plan.display_name} subscription activated 🎉`,
       body: `Your ${plan.display_name} subscription is now active. Enjoy your benefits!`,
       priority: "high",
-      action_url: "/settings/subscription",
-      data: { plan_name: plan.name, plan_id: planId },
-      sendMail: () => sendSubscriptionConfirmationEmail(userRows[0], plan, sub),
+      action_url: "/settings",
+      data: {
+        plan_name: plan.name,
+        plan_id: planId,
+        amount: sub.amount,
+        currency: sub.currency,
+      },
+      sendMail: () => sendSubscriptionConfirmationEmail(user, plan, sub),
     });
+
+    // ── Pro badge email ──
+    if (plan.name === "pro_badge" || plan.name?.includes("pro")) {
+      sendProBadgeActivatedEmail(user).catch(console.error);
+    }
+
+    // ADD trial ending check to verifySubscriptionPayment, after notify:
+    if (sub.trial_end) {
+      const daysToTrialEnd = Math.ceil(
+        (new Date(sub.trial_end) - Date.now()) / 86400000,
+      );
+      if (daysToTrialEnd <= 3 && daysToTrialEnd > 0) {
+        sendTrialEndingEmail(user, plan, daysToTrialEnd).catch(console.error);
+      }
+    }
 
     // Increment promo uses
     if (promoCode) {
@@ -550,8 +581,27 @@ async function activateSubscription(
   );
 
   const now = new Date();
-  const periodMonths =
-    interval === "year" ? 12 : interval === "quarter" ? 3 : 1;
+  // REPLACE this section (normalizedInterval declaration through expiry):
+  const normalizedInterval =
+    interval === "year"
+      ? "annual"
+      : interval === "month"
+        ? "monthly"
+        : interval === "annual"
+          ? "annual"
+          : interval === "monthly"
+            ? "monthly"
+            : interval === "quarter"
+              ? "quarterly"
+              : "monthly";
+
+  const periodMonths = // ← this was missing, causing ReferenceError
+    normalizedInterval === "annual"
+      ? 12
+      : normalizedInterval === "quarterly"
+        ? 3
+        : 1;
+
   const expiry = new Date(now);
   expiry.setMonth(expiry.getMonth() + periodMonths);
 
@@ -575,11 +625,7 @@ async function activateSubscription(
       status,
       currency,
       amount,
-      interval === "year"
-        ? "annual"
-        : interval === "quarter"
-          ? "quarterly"
-          : "monthly",
+      normalizedInterval,
       now,
       expiry,
       trial_end ? now : null,
@@ -612,11 +658,15 @@ async function activateSubscription(
   );
 
   // Special: activate Pro badge for maids
+  // In activateSubscription, after the pro_badge check, ADD:
   if (plan.name === "pro_badge") {
-    await db.query(
-      `UPDATE maid_profiles SET id_verified = true WHERE user_id = $1`,
+    const { rows: maidRows } = await db.query(
+      `SELECT name, email FROM users WHERE id = $1`,
       [userId],
     );
+    if (maidRows.length) {
+      sendProBadgeActivatedEmail(maidRows[0]).catch(console.error);
+    }
   }
 
   return rows[0];
