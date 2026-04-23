@@ -149,27 +149,31 @@ function fromNGN(amountNGN, currency) {
 }
 
 // ── Ensure wallet exists ──────────────────────────────────────────────
-async function ensureWallet(db, maidId, currency = 'NGN') {
-  currency = (currency || 'NGN').toUpperCase();
+async function ensureWallet(db, maidId, currency = "NGN") {
+  currency = (currency || "NGN").toUpperCase();
   const { rows } = await db.query(
-    'SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2',
-    [maidId, currency]
+    "SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2",
+    [maidId, currency],
   );
   if (rows.length > 0) return rows[0];
   try {
     const ins = await db.query(
-      'INSERT INTO maid_wallets (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn) VALUES ($1, $2, 0, 0, 0, 0) RETURNING *',
-      [maidId, currency]
+      "INSERT INTO maid_wallets (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn) VALUES ($1, $2, 0, 0, 0, 0) RETURNING *",
+      [maidId, currency],
     );
     return ins.rows[0];
   } catch (e) {
-    if (e.code !== '23505') throw e;
-    const r = await db.query('SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2', [maidId, currency]);
+    if (e.code !== "23505") throw e;
+    const r = await db.query(
+      "SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2",
+      [maidId, currency],
+    );
     return r.rows[0];
   }
 }
 
 // ── Credit wallet (called when payout is released from escrow) ────────
+// ── Credit wallet ─────────────────────────────────────────────────────
 export async function creditWallet(
   db,
   maidId,
@@ -178,31 +182,30 @@ export async function creditWallet(
   sourceId,
   description,
 ) {
-  const wallet = await ensureWallet(db, maidId, currency);
+  currency = (currency || "NGN").toUpperCase();
+  await ensureWallet(db, maidId, currency);
 
-  const newAvailable = Number(wallet.available) + Number(amount);
-  const newTotalEarned = Number(wallet.total_earned) + Number(amount);
-
-  await db.query(
+  const { rows } = await db.query(
     `UPDATE maid_wallets
-     SET available = $1, total_earned = $2, updated_at = now()
-     WHERE maid_id = $3`,
-    [newAvailable, newTotalEarned, maidId],
+     SET available_balance = available_balance + $1,
+         total_earned      = total_earned      + $1,
+         updated_at        = now()
+     WHERE maid_id = $2 AND currency = $3
+     RETURNING available_balance`,
+    [amount, maidId, currency],
   );
 
   await db.query(
     `INSERT INTO wallet_transactions
-       (maid_id, type, amount, currency, source, source_id,
-        balance_before, balance_after, description)
-     VALUES ($1,'credit',$2,$3,'booking_payout',$4,$5,$6,$7)`,
+       (maid_id, currency, type, amount, balance_after, description, booking_id)
+     VALUES ($1,$2,'credit',$3,$4,$5,$6)`,
     [
       maidId,
-      amount,
       currency,
-      sourceId,
-      wallet.available,
-      newAvailable,
+      amount,
+      Number(rows[0]?.available_balance || 0),
       description,
+      sourceId || null,
     ],
   );
 }
@@ -350,25 +353,24 @@ export const requestWithdrawal = async (req, res) => {
     });
   }
   // ── PIN verified ─────────────────────────────────────────────────
-
+  // ── Request withdrawal — REPLACE the entire try block after PIN check ──
   try {
-    const wallet = await ensureWallet(req.db, req.user.id);
+    const wallet = await ensureWallet(req.db, req.user.id, currency);
 
-    if (Number(wallet.available) < Number(amount)) {
+    if (Number(wallet.available_balance) < Number(amount)) {
       return res.status(400).json({
         error: "insufficient balance",
-        available: wallet.available,
+        available: wallet.available_balance,
         requested: amount,
+        currency,
       });
     }
 
-    // Block if another withdrawal is already in flight
-    const { rows: pending } = await req.db.query(
-      `SELECT id FROM withdrawals
-       WHERE maid_id = $1 AND status IN ('pending','processing')`,
+    const { rows: pendingRows } = await req.db.query(
+      `SELECT id FROM withdrawals WHERE maid_id = $1 AND status IN ('pending','processing')`,
       [req.user.id],
     );
-    if (pending.length) {
+    if (pendingRows.length) {
       return res.status(409).json({
         error:
           "you already have a pending withdrawal — wait for it to complete",
@@ -379,17 +381,15 @@ export const requestWithdrawal = async (req, res) => {
     const netAmount = Math.max(0, Number(amount) - fee);
 
     // Deduct from available, hold in pending
-    const newAvailable = Number(wallet.available) - Number(amount);
-    const newPending = Number(wallet.pending) + Number(amount);
-
     await req.db.query(
       `UPDATE maid_wallets
-       SET available = $1, pending = $2, updated_at = now()
-       WHERE maid_id = $3`,
-      [newAvailable, newPending, req.user.id],
+       SET available_balance = available_balance - $1,
+           pending_balance   = pending_balance   + $1,
+           updated_at        = now()
+       WHERE maid_id = $2 AND currency = $3`,
+      [amount, req.user.id, currency],
     );
 
-    // Create withdrawal record
     const { rows } = await req.db.query(
       `INSERT INTO withdrawals (
         maid_id, amount, currency, method, status,
@@ -397,16 +397,11 @@ export const requestWithdrawal = async (req, res) => {
         swift_code, iban, bank_address,
         mobile_provider, mobile_number, mobile_country,
         crypto_currency, crypto_address, crypto_network,
-        paypal_email, wise_email,
-        fee, net_amount, notes
+        paypal_email, wise_email, fee, net_amount, notes
       ) VALUES (
         $1,$2,$3,$4,'pending',
-        $5,$6,$7,$8,$9,
-        $10,$11,$12,
-        $13,$14,$15,
-        $16,$17,$18,
-        $19,$20,
-        $21,$22,$23
+        $5,$6,$7,$8,$9,$10,$11,$12,
+        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
       ) RETURNING *`,
       [
         req.user.id,
@@ -438,21 +433,18 @@ export const requestWithdrawal = async (req, res) => {
     // Log wallet transaction
     await req.db.query(
       `INSERT INTO wallet_transactions
-         (maid_id, type, amount, currency, source, source_id,
-          balance_before, balance_after, description)
-       VALUES ($1,'debit',$2,$3,'withdrawal',$4,$5,$6,$7)`,
+         (maid_id, currency, type, amount, balance_after, description, withdrawal_id)
+       VALUES ($1,$2,'debit',$3,$4,$5,$6)`,
       [
         req.user.id,
-        amount,
         currency,
-        rows[0].id,
-        wallet.available,
-        newAvailable,
+        amount,
+        Number(wallet.available_balance) - Number(amount),
         `Withdrawal request via ${method}`,
+        rows[0].id,
       ],
     );
 
-    // Fetch maid name for notifications
     const { rows: maidInfo } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [req.user.id],
@@ -460,7 +452,6 @@ export const requestWithdrawal = async (req, res) => {
     const maidName = maidInfo[0]?.name || "Maid";
     const maidEmail = maidInfo[0]?.email || req.user.email;
 
-    // In-app + email — maid
     await notify(req.db, {
       userId: req.user.id,
       type: "withdrawal_requested",
@@ -474,15 +465,13 @@ export const requestWithdrawal = async (req, res) => {
         ),
     });
 
-    // In-app — all admins
     await notifyAdmins(req.db, {
       type: "withdrawal_admin_alert",
       title: "New withdrawal request",
-      body: `${maidName} requested a withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
+      body: `${maidName} requested ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
       data: { withdrawal_id: rows[0].id },
     });
 
-    // Email admins
     const { rows: admins } = await req.db.query(
       `SELECT id, name, email FROM users WHERE role = 'admin' AND is_active = true`,
     );
@@ -557,32 +546,30 @@ export const cancelWithdrawal = async (req, res) => {
     }
 
     // Refund amount back to available balance
-    const wallet = await ensureWallet(req.db, req.user.id);
+    // ── cancelWithdrawal — replace the refund + log section:
     const refundAmount = Number(rows[0].amount);
+    const wCurrency = rows[0].currency || "NGN";
 
     await req.db.query(
       `UPDATE maid_wallets
-       SET available = available + $1,
-           pending   = GREATEST(0, pending - $1),
-           updated_at = now()
-       WHERE maid_id = $2`,
-      [refundAmount, req.user.id],
+       SET available_balance = available_balance + $1,
+           pending_balance   = GREATEST(0, pending_balance - $1),
+           updated_at        = now()
+       WHERE maid_id = $2 AND currency = $3`,
+      [refundAmount, req.user.id, wCurrency],
     );
 
-    // Log reversal
     await req.db.query(
       `INSERT INTO wallet_transactions
-         (maid_id, type, amount, currency, source, source_id,
-          balance_before, balance_after, description)
-       VALUES ($1,'reversal',$2,$3,'withdrawal',$4,$5,$6,$7)`,
+         (maid_id, currency, type, amount, balance_after, description, withdrawal_id)
+       VALUES ($1,$2,'credit',$3,$4,$5,$6)`,
       [
         req.user.id,
+        wCurrency,
         refundAmount,
-        rows[0].currency,
+        0,
+        "Withdrawal cancelled — refunded",
         rows[0].id,
-        wallet.available,
-        Number(wallet.available) + refundAmount,
-        "Withdrawal cancelled by maid",
       ],
     );
 
@@ -710,63 +697,50 @@ export const adminProcessWithdrawal = async (req, res) => {
     }
 
     // ── 4. Wallet updates based on action ─────────────────────────
+
     if (newStatus === "paid") {
-      // Release from pending — maid has been paid
       await req.db.query(
         `UPDATE maid_wallets
-         SET pending         = GREATEST(0, pending - $1),
+         SET pending_balance = GREATEST(0, pending_balance - $1),
              total_withdrawn = total_withdrawn + $1,
              updated_at      = now()
-         WHERE maid_id = $2`,
-        [w.amount, w.maid_id],
+         WHERE maid_id = $2 AND currency = $3`,
+        [w.amount, w.maid_id, w.currency || "NGN"],
       );
-
-      // Log the debit
-      const wallet = await ensureWallet(req.db, w.maid_id);
       await req.db.query(
         `INSERT INTO wallet_transactions
-           (maid_id, type, amount, currency, source, source_id,
-            balance_before, balance_after, description)
-         VALUES ($1,'debit',$2,$3,'withdrawal',$4,$5,$6,$7)`,
+           (maid_id, currency, type, amount, balance_after, description, withdrawal_id)
+         VALUES ($1,$2,'debit',$3,0,$4,$5)`,
         [
           w.maid_id,
+          w.currency || "NGN",
           w.amount,
-          w.currency,
-          w.id,
-          Number(wallet.available) + Number(w.amount),
-          wallet.available,
           `Withdrawal paid via ${w.method} — ref: ${gateway_ref || "N/A"}`,
+          w.id,
         ],
       );
     }
 
+    // ── adminProcessWithdrawal "rejected/failed" wallet block — REPLACE:
     if (newStatus === "rejected" || newStatus === "failed") {
-      // Return amount to maid's available balance
-      const wallet = await ensureWallet(req.db, w.maid_id);
-
       await req.db.query(
         `UPDATE maid_wallets
-         SET available  = available + $1,
-             pending    = GREATEST(0, pending - $1),
-             updated_at = now()
-         WHERE maid_id = $2`,
-        [w.amount, w.maid_id],
+         SET available_balance = available_balance + $1,
+             pending_balance   = GREATEST(0, pending_balance - $1),
+             updated_at        = now()
+         WHERE maid_id = $2 AND currency = $3`,
+        [w.amount, w.maid_id, w.currency || "NGN"],
       );
-
-      // Log the reversal
       await req.db.query(
         `INSERT INTO wallet_transactions
-           (maid_id, type, amount, currency, source, source_id,
-            balance_before, balance_after, description)
-         VALUES ($1,'reversal',$2,$3,'withdrawal',$4,$5,$6,$7)`,
+           (maid_id, currency, type, amount, balance_after, description, withdrawal_id)
+         VALUES ($1,$2,'credit',$3,0,$4,$5)`,
         [
           w.maid_id,
+          w.currency || "NGN",
           w.amount,
-          w.currency,
+          `Withdrawal ${newStatus} — refunded`,
           w.id,
-          wallet.available,
-          Number(wallet.available) + Number(w.amount),
-          `Withdrawal ${newStatus} — ${failure_reason || "no reason given"}`,
         ],
       );
     }
@@ -946,25 +920,24 @@ export const adminAutoProcess = async (req, res) => {
       ],
     );
 
+    // ── adminAutoProcess — fix the two broken wallet updates at the bottom:
     if (result.success) {
-      // Settle wallet
       await req.db.query(
         `UPDATE maid_wallets
-         SET pending          = GREATEST(0, pending - $1),
+         SET pending_balance = GREATEST(0, pending_balance - $1),
              total_withdrawn = total_withdrawn + $1,
              updated_at      = now()
-         WHERE maid_id = $2`,
-        [w.amount, w.maid_id],
+         WHERE maid_id = $2 AND currency = $3`,
+        [w.amount, w.maid_id, w.currency || "NGN"],
       );
     } else {
-      // Return to available
       await req.db.query(
         `UPDATE maid_wallets
-         SET available  = available + $1,
-             pending    = GREATEST(0, pending - $1),
-             updated_at = now()
-         WHERE maid_id = $2`,
-        [w.amount, w.maid_id],
+         SET available_balance = available_balance + $1,
+             pending_balance   = GREATEST(0, pending_balance - $1),
+             updated_at        = now()
+         WHERE maid_id = $2 AND currency = $3`,
+        [w.amount, w.maid_id, w.currency || "NGN"],
       );
     }
 
