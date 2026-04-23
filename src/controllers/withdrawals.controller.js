@@ -149,17 +149,24 @@ function fromNGN(amountNGN, currency) {
 }
 
 // ── Ensure wallet exists ──────────────────────────────────────────────
-async function ensureWallet(db, maidId, currency = "NGN") {
-  await db.query(
-    `INSERT INTO maid_wallets (maid_id, currency)
-     VALUES ($1, $2) ON CONFLICT (maid_id) DO NOTHING`,
-    [maidId, currency],
-  );
+async function ensureWallet(db, maidId, currency = 'NGN') {
+  currency = (currency || 'NGN').toUpperCase();
   const { rows } = await db.query(
-    `SELECT * FROM maid_wallets WHERE maid_id = $1`,
-    [maidId],
+    'SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2',
+    [maidId, currency]
   );
-  return rows[0];
+  if (rows.length > 0) return rows[0];
+  try {
+    const ins = await db.query(
+      'INSERT INTO maid_wallets (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn) VALUES ($1, $2, 0, 0, 0, 0) RETURNING *',
+      [maidId, currency]
+    );
+    return ins.rows[0];
+  } catch (e) {
+    if (e.code !== '23505') throw e;
+    const r = await db.query('SELECT id FROM maid_wallets WHERE maid_id = $1 AND currency = $2', [maidId, currency]);
+    return r.rows[0];
+  }
 }
 
 // ── Credit wallet (called when payout is released from escrow) ────────
