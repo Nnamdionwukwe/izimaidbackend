@@ -4,7 +4,7 @@ import {
   createBooking,
   listBookings,
   getBooking,
-  updateStatus,
+  updateBookingStatus,
   submitReview,
   checkIn,
   checkOut,
@@ -17,7 +17,6 @@ import {
   setEmergencyContact,
   getEmergencyContacts,
   deleteEmergencyContact,
-  updateBookingStatus,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -31,7 +30,7 @@ router.delete(
   deleteEmergencyContact,
 );
 
-// ─── SOS (admin) ─────────────────────────────────────────────────────
+// ─── SOS (admin) ──────────────────────────────────────────────────────
 router.get("/sos", requireAuth, requireRole("admin"), getSOSAlerts);
 router.patch(
   "/sos/:alertId/resolve",
@@ -40,20 +39,19 @@ router.patch(
   resolveSOSAlert,
 );
 
-// ─── Core bookings ────────────────────────────────────────────────────
+// ─── Core bookings ─────────────────────────────────────────────────────
 router.post("/", requireAuth, requireRole("customer"), createBooking);
 router.get("/", requireAuth, listBookings);
 router.get("/:id", requireAuth, getBooking);
-router.patch("/:id/status", requireAuth, updateStatus);
+router.patch("/:id/status", requireAuth, updateBookingStatus); // ← only once
 router.post("/:id/review", requireAuth, requireRole("customer"), submitReview);
 
-// ─── Job activity ─────────────────────────────────────────────────────
+// ─── Job activity ──────────────────────────────────────────────────────
 router.post("/:id/checkin", requireAuth, requireRole("maid"), checkIn);
 router.post("/:id/checkout", requireAuth, requireRole("maid"), checkOut);
 router.post("/:id/location", requireAuth, requireRole("maid"), updateLocation);
 router.get("/:id/location", requireAuth, getJobLocation);
 router.post("/:id/sos", requireAuth, triggerSOS);
 router.post("/:id/video-call", requireAuth, initiateVideoCall);
-router.patch("/:id/status", requireAuth, updateBookingStatus);
 
 export default router;

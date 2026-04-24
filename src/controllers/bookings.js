@@ -230,11 +230,12 @@ export const getBooking = async (req, res) => {
     }
 
     // ── Latest location (in_progress only) ────────────────────────
+    // Replace the latestLocation block in getBooking:
     let latestLocation = null;
-    if (booking.status === "in_progress" && booking.live_tracking_on) {
+    if (["confirmed", "in_progress", "completed"].includes(booking.status)) {
       const { rows: locRows } = await req.db.query(
         `SELECT lat, lng, recorded_at FROM booking_locations
-         WHERE booking_id = $1 ORDER BY recorded_at DESC LIMIT 1`,
+     WHERE booking_id = $1 ORDER BY recorded_at DESC LIMIT 1`,
         [booking.id],
       );
       latestLocation = locRows[0] || null;
