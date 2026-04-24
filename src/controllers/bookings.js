@@ -401,8 +401,12 @@ export const checkIn = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `UPDATE bookings
-       SET checkin_at = now(), checkin_lat = $1, checkin_lng = $2,
-           live_tracking_on = true, updated_at = now()
+       SET checkin_at = now(),
+           checkin_lat = $1,
+           checkin_lng = $2,
+           live_tracking_on = true,
+           status = 'in_progress',        -- ← THIS WAS MISSING
+           updated_at = now()
        WHERE id = $3 AND maid_id = $4
          AND status = 'confirmed'
        RETURNING *`,
@@ -415,19 +419,10 @@ export const checkIn = async (req, res) => {
       });
     }
 
-    // Log first location point
     await req.db.query(
       `INSERT INTO booking_locations (booking_id, maid_id, lat, lng)
        VALUES ($1, $2, $3, $4)`,
       [req.params.id, req.user.id, lat, lng],
-    );
-
-    // Notify customer
-    const { rows: custRows } = await req.db.query(
-      `SELECT u.name, u.email FROM users u
-       JOIN bookings b ON b.customer_id = u.id
-       WHERE b.id = $1`,
-      [req.params.id],
     );
 
     return res.json({
