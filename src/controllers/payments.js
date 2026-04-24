@@ -311,12 +311,10 @@ export const initializeCryptoPayment = async (req, res) => {
     return res.status(400).json({ error: "booking_id is required" });
 
   if (!COINBASE_KEY) {
-    return res
-      .status(503)
-      .json({
-        error:
-          "crypto payments not configured — COINBASE_COMMERCE_API_KEY missing",
-      });
+    return res.status(503).json({
+      error:
+        "crypto payments not configured — COINBASE_COMMERCE_API_KEY missing",
+    });
   }
 
   try {
@@ -869,11 +867,9 @@ export const saveMaidBankDetails = async (req, res) => {
     currency = "NGN",
   } = req.body;
   if (!bank_name || !account_number || !account_name) {
-    return res
-      .status(400)
-      .json({
-        error: "bank_name, account_number and account_name are required",
-      });
+    return res.status(400).json({
+      error: "bank_name, account_number and account_name are required",
+    });
   }
   try {
     const { rows } = await req.db.query(

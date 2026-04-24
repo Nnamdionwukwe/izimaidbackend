@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import express from "express";
+// REPLACE the entire import block — remove the duplicate getMaidEarnings:
 import {
   initializePayment,
   initializeStripePayment,
@@ -42,6 +43,8 @@ router.get(
   requireRole("maid"),
   getMaidBankDetails,
 );
+// Add this line with your other maid routes:
+router.get("/maid/earnings", requireAuth, requireRole("maid"), getMaidEarnings);
 router.post(
   "/bank-details",
   requireAuth,
