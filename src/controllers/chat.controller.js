@@ -456,11 +456,9 @@ export async function deleteMessage(req, res) {
       const ageMinutes =
         (Date.now() - new Date(msg.created_at).getTime()) / 60000;
       if (ageMinutes > 5) {
-        return res
-          .status(403)
-          .json({
-            error: "Messages can only be deleted within 5 minutes of sending",
-          });
+        return res.status(403).json({
+          error: "Messages can only be deleted within 5 minutes of sending",
+        });
       }
     }
 
@@ -708,5 +706,82 @@ export async function deleteConversation(req, res) {
   } catch (err) {
     console.error("[chat] deleteConversation error:", err.message);
     res.status(500).json({ error: "Failed to delete conversation" });
+  }
+}
+
+// Add this new export to src/controllers/chat.controller.js
+
+export async function getOrCreateInquiry(req, res) {
+  try {
+    const customerId = req.user.id;
+    const { maidId } = req.params;
+
+    // Verify maid exists
+    const { rows: maidRows } = await db.query(
+      `SELECT u.id, u.name FROM users u WHERE u.id = $1 AND u.role = 'maid' AND u.is_active = true`,
+      [maidId],
+    );
+    if (!maidRows.length) {
+      return res.status(404).json({ error: "Maid not found" });
+    }
+
+    // Get or create inquiry conversation
+    let { rows } = await db.query(
+      `SELECT * FROM conversations
+       WHERE customer_id = $1 AND maid_id = $2 AND type = 'inquiry'
+       LIMIT 1`,
+      [customerId, maidId],
+    );
+
+    if (!rows.length) {
+      const ins = await db.query(
+        `INSERT INTO conversations
+           (customer_id, maid_id, type, created_at, updated_at)
+         VALUES ($1, $2, 'inquiry', now(), now())
+         RETURNING *`,
+        [customerId, maidId],
+      );
+      rows = ins.rows;
+    }
+
+    const conversation = rows[0];
+
+    // Fetch messages
+    const { rows: messages } = await db.query(
+      `SELECT m.*,
+              u.name   AS sender_name,
+              u.role   AS sender_role,
+              u.avatar AS sender_avatar,
+              CASE WHEN m.deleted_at IS NOT NULL THEN 'deleted' ELSE m.content END AS content,
+              CASE WHEN m.deleted_at IS NOT NULL THEN NULL ELSE m.media_url END AS media_url
+       FROM messages m
+       JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = $1
+       ORDER BY m.created_at ASC`,
+      [conversation.id],
+    );
+
+    // Mark read
+    await db.query(
+      `UPDATE messages SET is_read = true
+       WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
+      [conversation.id, customerId],
+    );
+
+    const isCustomer = customerId === conversation.customer_id;
+    await db.query(
+      `UPDATE conversations
+       SET ${isCustomer ? "unread_customer = 0" : "unread_maid = 0"}
+       WHERE id = $1`,
+      [conversation.id],
+    );
+
+    return res.json({
+      conversation: { ...conversation, maid_name: maidRows[0].name },
+      messages,
+    });
+  } catch (err) {
+    console.error("[chat/getOrCreateInquiry]", err);
+    return res.status(500).json({ error: err.message });
   }
 }

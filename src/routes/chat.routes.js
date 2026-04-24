@@ -12,7 +12,10 @@ import {
   deleteConversation,
   adminGetAllConversations,
   adminGetConversation,
+  getOrCreateInquiry,
 } from "../controllers/chat.controller.js";
+
+import db from "../config/database.js";
 
 const router = express.Router();
 
@@ -101,9 +104,72 @@ router.patch("/:conversationId/read", requireAuth, markMessagesRead);
 //   NOTE: specific routes must be registered before wildcard routes in Express
 router.delete("/messages/:messageId", requireAuth, deleteMessage);
 
+router.get("/:conversationId/messages", requireAuth, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+
+    const { rows: conv } = await req.db.query(
+      // ← req.db not db
+      `SELECT * FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    if (!conv.length) return res.status(404).json({ error: "not found" });
+
+    const c = conv[0];
+    if (
+      c.customer_id !== userId &&
+      c.maid_id !== userId &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    const { rows: messages } = await req.db.query(
+      // ← req.db not db
+      `SELECT m.*,
+              u.name   AS sender_name,
+              u.role   AS sender_role,
+              u.avatar AS sender_avatar,
+              CASE WHEN m.deleted_at IS NOT NULL THEN 'deleted' ELSE m.content END AS content,
+              CASE WHEN m.deleted_at IS NOT NULL THEN NULL ELSE m.media_url END AS media_url
+       FROM messages m
+       JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = $1
+       ORDER BY m.created_at ASC`,
+      [conversationId],
+    );
+
+    // Mark read
+    await req.db.query(
+      `UPDATE messages SET is_read = true
+       WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
+      [conversationId, userId],
+    );
+
+    const isCustomer = userId === c.customer_id;
+    await req.db.query(
+      `UPDATE conversations SET ${isCustomer ? "unread_customer = 0" : "unread_maid = 0"} WHERE id = $1`,
+      [conversationId],
+    );
+
+    return res.json({ conversation: c, messages });
+  } catch (err) {
+    console.error("[chat/:id/messages]", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/chat/:conversationId
 //   Soft-delete a conversation for the current user only (customer or maid)
 //   Admin cannot use this — their view is never affected
 router.delete("/:conversationId", requireAuth, deleteConversation);
+
+router.get(
+  "/inquiry/:maidId",
+  requireAuth,
+  requireRole("customer"),
+  getOrCreateInquiry,
+);
 
 export default router;

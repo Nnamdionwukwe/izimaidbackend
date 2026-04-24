@@ -102,17 +102,18 @@ export const listMaids = async (req, res) => {
 
 export const getMaid = async (req, res) => {
   try {
+    // In getMaid, add u.phone, u.email to the SELECT:
     const { rows } = await req.db.query(
-      `SELECT u.id, u.name, u.avatar, u.created_at as member_since,
-              mp.bio, mp.hourly_rate, mp.years_exp, mp.services,
-              mp.location, mp.is_available, mp.rating, mp.total_reviews,
-              mp.rate_hourly, mp.rate_daily, mp.rate_weekly, mp.rate_monthly,
-              mp.rate_custom, mp.pricing_note, mp.currency,
-              mp.latitude, mp.longitude, mp.languages, mp.max_distance_km,
-              mp.id_verified, mp.background_checked
-       FROM maid_profiles mp
-       JOIN users u ON u.id = mp.user_id
-       WHERE u.id = $1 AND u.is_active = true`,
+      `SELECT u.id, u.name, u.avatar, u.phone, u.email, u.created_at as member_since,
+          mp.bio, mp.hourly_rate, mp.years_exp, mp.services,
+          mp.location, mp.is_available, mp.rating, mp.total_reviews,
+          mp.rate_hourly, mp.rate_daily, mp.rate_weekly, mp.rate_monthly,
+          mp.rate_custom, mp.pricing_note, mp.currency,
+          mp.latitude, mp.longitude, mp.languages, mp.max_distance_km,
+          mp.id_verified, mp.background_checked
+   FROM maid_profiles mp
+   JOIN users u ON u.id = mp.user_id
+   WHERE u.id = $1 AND u.is_active = true`,
       [req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "maid not found" });
