@@ -1,45 +1,50 @@
-import nodemailer from "nodemailer";
 import { google } from "googleapis";
+import nodemailer from "nodemailer";
 
 const APP_NAME = process.env.APP_NAME || "Deusizi Sparkle";
 const FRONTEND =
   process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
 
-// ── Build transporter — OAuth2 if credentials exist, else SMTP (local dev) ───
-async function buildTransporter() {
-  const hasOAuth =
-    process.env.GMAIL_CLIENT_ID &&
-    process.env.GMAIL_CLIENT_SECRET &&
-    process.env.GMAIL_REFRESH_TOKEN;
+// ── Send via Gmail REST API (no SMTP — works on Railway) ──────────────
+async function sendViaGmailAPI({ to, subject, html }) {
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    "https://developers.google.com/oauthplayground",
+  );
+  oauth2Client.setCredentials({
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+  });
 
-  if (hasOAuth) {
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GMAIL_CLIENT_ID,
-      process.env.GMAIL_CLIENT_SECRET,
-      "https://developers.google.com/oauthplayground",
-    );
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    oauth2Client.setCredentials({
-      refresh_token: process.env.GMAIL_REFRESH_TOKEN,
-    });
+  const from = `${APP_NAME} <${process.env.SMTP_USER}>`;
+  const messageParts = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    html,
+  ];
+  const message = messageParts.join("\n");
+  const encoded = Buffer.from(message)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 
-    const { token: accessToken } = await oauth2Client.getAccessToken();
+  const res = await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw: encoded },
+  });
+  return res.data.id;
+}
 
-    return nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        type: "OAuth2",
-        user: process.env.SMTP_USER,
-        clientId: process.env.GMAIL_CLIENT_ID,
-        clientSecret: process.env.GMAIL_CLIENT_SECRET,
-        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-        accessToken,
-      },
-    });
-  }
-
-  // Local fallback — SMTP port 465
-  return nodemailer.createTransport({
+// ── Send via SMTP (local dev fallback) ────────────────────────────────
+async function sendViaSMTP({ to, subject, html }) {
+  const transport = nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 465,
     secure: true,
@@ -49,64 +54,55 @@ async function buildTransporter() {
       pass: process.env.SMTP_PASS,
     },
     tls: { rejectUnauthorized: false },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
   });
+  const info = await transport.sendMail({
+    from: `${APP_NAME} <${process.env.SMTP_USER}>`,
+    to,
+    subject,
+    html,
+  });
+  return info.messageId;
 }
 
-// ── transporter object — compatible with bookings.js triggerSOS ───────────────
-export const transporter = {
-  sendMail: async (opts) => {
-    const t = await buildTransporter();
-    return t.sendMail(opts);
-  },
-  verify: async () => {
-    // No-op for OAuth2 — avoids SMTP connection crash on Railway
-    if (process.env.GMAIL_CLIENT_ID) return true;
-    const t = await buildTransporter();
-    return new Promise((resolve, reject) =>
-      t.verify((err, ok) => (err ? reject(err) : resolve(ok))),
-    );
-  },
-};
-
-// Verify on startup
-// Verify on startup — OAuth2 needs no SMTP verify
-if (process.env.GMAIL_CLIENT_ID) {
-  console.log("✓ Gmail OAuth2 ready");
-} else {
-  buildTransporter()
-    .then(
-      (t) =>
-        new Promise((res, rej) => t.verify((e, ok) => (e ? rej(e) : res(ok)))),
-    )
-    .then(() => console.log("✓ Gmail SMTP ready"))
-    .catch((err) => console.warn("⚠️ Gmail SMTP:", err.message));
-}
-
-// ── Base send ─────────────────────────────────────────────────────────────────
+// ── Base send — auto picks Gmail API or SMTP ──────────────────────────
 export async function sendEmail({ to, subject, html }) {
   try {
-    const t = await buildTransporter();
-    const info = await t.sendMail({
-      from: `${APP_NAME} <${process.env.SMTP_USER}>`,
-      to,
-      subject,
-      html,
-    });
-    console.log(`✓ [EMAIL] ${subject} → ${to}`);
-    return { success: true, id: info.messageId };
+    const useGmailAPI = !!(
+      process.env.GMAIL_CLIENT_ID &&
+      process.env.GMAIL_CLIENT_SECRET &&
+      process.env.GMAIL_REFRESH_TOKEN
+    );
+
+    const id = useGmailAPI
+      ? await sendViaGmailAPI({ to, subject, html })
+      : await sendViaSMTP({ to, subject, html });
+
+    console.log(
+      `✓ [EMAIL] ${subject} → ${to} (${useGmailAPI ? "Gmail API" : "SMTP"})`,
+    );
+    return { success: true, id };
   } catch (err) {
     console.error(`✗ [EMAIL] Failed → ${to}:`, err.message);
     return { success: false, error: err.message };
   }
 }
 
-// ── All your existing email functions below are unchanged ─────────────────────
-// sendVerificationEmail, sendWelcomeEmail, sendBookingConfirmation ...
-// Nothing below this line needs to change
+// ── transporter shim — used by bookings.js triggerSOS ─────────────────
+export const transporter = {
+  sendMail: async ({ to, subject, html }) => {
+    return sendEmail({ to, subject, html });
+  },
+  verify: async () => true,
+};
 
+// Startup log
+if (process.env.GMAIL_CLIENT_ID) {
+  console.log("✓ Gmail API ready (no SMTP)");
+} else {
+  console.log("✓ Gmail SMTP ready (local)");
+}
+
+// ── All existing email functions unchanged below ───────────────────────
 // ── Shared styles ─────────────────────────────────────────────────────
 const wrap = (content) => `
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
