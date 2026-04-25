@@ -62,6 +62,8 @@ export const transporter = {
     return t.sendMail(opts);
   },
   verify: async () => {
+    // No-op for OAuth2 — avoids SMTP connection crash on Railway
+    if (process.env.GMAIL_CLIENT_ID) return true;
     const t = await buildTransporter();
     return new Promise((resolve, reject) =>
       t.verify((err, ok) => (err ? reject(err) : resolve(ok))),
@@ -70,12 +72,15 @@ export const transporter = {
 };
 
 // Verify on startup
-// Verify on startup
+// Verify on startup — OAuth2 needs no SMTP verify
 if (process.env.GMAIL_CLIENT_ID) {
   console.log("✓ Gmail OAuth2 ready");
 } else {
   buildTransporter()
-    .then((t) => t.verify())
+    .then(
+      (t) =>
+        new Promise((res, rej) => t.verify((e, ok) => (e ? rej(e) : res(ok)))),
+    )
     .then(() => console.log("✓ Gmail SMTP ready"))
     .catch((err) => console.warn("⚠️ Gmail SMTP:", err.message));
 }
