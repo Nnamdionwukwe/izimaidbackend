@@ -953,3 +953,59 @@ export const getPayment = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+export const listCustomerPayments = async (req, res) => {
+  const { currency, gateway, status, page = 1, limit = 20 } = req.query;
+  const offset = (Number(page) - 1) * Number(limit);
+  const conditions = [`b.customer_id = $1`];
+  const params = [req.user.id];
+
+  if (currency) {
+    params.push(currency);
+    conditions.push(`p.currency = $${params.length}`);
+  }
+  if (gateway) {
+    params.push(gateway);
+    conditions.push(`p.gateway = $${params.length}`);
+  }
+  if (status) {
+    params.push(status);
+    conditions.push(`p.status = $${params.length}`);
+  }
+
+  params.push(Number(limit), offset);
+
+  try {
+    const { rows } = await req.db.query(
+      `SELECT p.id, p.status, p.gateway, p.currency, p.amount,
+              p.platform_fee, p.maid_payout, p.paid_at, p.created_at,
+              p.paystack_reference, p.stripe_payment_id, p.bank_transfer_ref,
+              b.id AS booking_id, b.service_date, b.address,
+              b.duration_hours, b.total_amount, b.status AS booking_status,
+              m.name AS maid_name, m.avatar AS maid_avatar
+       FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       JOIN users m    ON m.id = b.maid_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY p.created_at DESC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+
+    const { rows: totals } = await req.db.query(
+      `SELECT p.currency,
+              COUNT(*) AS count,
+              COALESCE(SUM(p.amount) FILTER (WHERE p.status = 'success'), 0) AS total_paid
+       FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       WHERE b.customer_id = $1
+       GROUP BY p.currency`,
+      [req.user.id],
+    );
+
+    return res.json({ payments: rows, summary: totals });
+  } catch (err) {
+    console.error("[payments/listCustomerPayments]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};

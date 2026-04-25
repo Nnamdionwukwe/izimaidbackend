@@ -21,6 +21,7 @@ import {
   adminProcessPayout,
   adminListPayouts,
   listPendingPayments,
+  listCustomerPayments,
 } from "../controllers/payments.js";
 
 const router = Router();
@@ -31,6 +32,7 @@ router.post("/initialize/stripe", requireAuth, initializeStripePayment); // Stri
 router.post("/initialize/bank", requireAuth, initializeBankTransfer); // Bank transfer
 router.post("/confirm/bank", requireAuth, confirmBankTransfer); // Upload proof
 router.post("/initialize/crypto", requireAuth, initializeCryptoPayment); // Crypto
+router.get("/my", requireAuth, listCustomerPayments);
 
 router.get("/verify", requireAuth, verifyPayment); // ?gateway=paystack&reference=x OR ?gateway=stripe&session_id=x
 router.get("/booking/:booking_id", requireAuth, getPayment);
