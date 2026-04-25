@@ -57,8 +57,17 @@ async function backfillWallets() {
       if (existing.length === 0) {
         await client.query(
           `INSERT INTO maid_wallets
-             (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
-           VALUES ($1, $2, $3, 0, $3, 0)`,
+     (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
+   VALUES ($1, $2, $3, 0, $3, 0)
+   ON CONFLICT (maid_id, currency)
+   DO UPDATE SET
+     total_earned = GREATEST(maid_wallets.total_earned, $3),
+     available_balance = CASE
+       WHEN (maid_wallets.available_balance + maid_wallets.pending_balance) < $3
+       THEN GREATEST(maid_wallets.available_balance, $3 - maid_wallets.total_withdrawn - maid_wallets.pending_balance)
+       ELSE maid_wallets.available_balance
+     END,
+     updated_at = now()`,
           [row.maid_id, currency, earned],
         );
         console.log(
@@ -70,14 +79,17 @@ async function backfillWallets() {
         if (earned > currentEarned) {
           await client.query(
             `UPDATE maid_wallets
-             SET total_earned = $1,
-                 available_balance = GREATEST(available_balance, $1),
-                 updated_at = now()
-             WHERE maid_id = $2 AND currency = $3`,
+     SET total_earned = GREATEST(total_earned, $1),
+         available_balance = GREATEST(
+           available_balance,
+           GREATEST(0, $1 - total_withdrawn - pending_balance)
+         ),
+         updated_at = now()
+     WHERE maid_id = $2 AND currency = $3`,
             [earned, row.maid_id, currency],
           );
           console.log(
-            `  🔄 Updated wallet: maid=${row.maid_id.slice(0, 8)} currency=${currency} earned=${currentEarned} → ${earned}`,
+            `  🔄 Fixed: maid=${row.maid_id.slice(0, 8)} currency=${currency} available set to ${earned}`,
           );
           updated++;
         } else {

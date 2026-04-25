@@ -21,7 +21,7 @@ async function ensureWallet(db, maidId, currency = "NGN") {
 // GET /api/wallet  — returns ALL currency balances for the maid
 export const getWallet = async (req, res) => {
   try {
-    // ── Step 1: Always sync wallet from actual completed bookings ──
+    // ── Always sync ALL currencies from actual completed bookings ──
     const { rows: earnRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, mp.currency, 'NGN') AS currency,
@@ -36,31 +36,35 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
-    // Upsert a wallet row for every currency the maid has earned in
     for (const row of earnRows) {
       const currency = (row.currency || "NGN").toUpperCase();
+      const earned = Number(row.total_earned);
+
       await req.db.query(
         `INSERT INTO maid_wallets
            (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
          VALUES ($1, $2, $3, 0, $3, 0)
-         ON CONFLICT (maid_id, currency)
-         DO UPDATE SET
-           total_earned = GREATEST(maid_wallets.total_earned, EXCLUDED.total_earned),
-           available_balance = GREATEST(maid_wallets.available_balance, 0),
+         ON CONFLICT (maid_id, currency) DO UPDATE SET
+           total_earned = GREATEST(maid_wallets.total_earned, $3),
+           available_balance = GREATEST(
+             maid_wallets.available_balance,
+             GREATEST(0, $3 - maid_wallets.total_withdrawn - maid_wallets.pending_balance)
+           ),
            updated_at = now()`,
-        [req.user.id, currency, Number(row.total_earned)],
+        [req.user.id, currency, earned],
       );
     }
 
-    // ── Step 2: Ensure at least one NGN wallet exists ──────────────
+    // Ensure at least one NGN wallet exists
     await req.db.query(
-      `INSERT INTO maid_wallets (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
+      `INSERT INTO maid_wallets
+         (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
        VALUES ($1, 'NGN', 0, 0, 0, 0)
        ON CONFLICT (maid_id, currency) DO NOTHING`,
       [req.user.id],
     );
 
-    // ── Step 3: Fetch all wallet rows ──────────────────────────────
+    // Fetch all wallet rows after sync
     const { rows: wallets } = await req.db.query(
       `SELECT currency, available_balance, pending_balance,
               total_earned, total_withdrawn, updated_at
@@ -91,6 +95,7 @@ export const getWallet = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
 // GET /api/wallet/history  — paginated ledger, optionally filtered by currency
 export const getWalletHistory = async (req, res) => {
   const { currency, limit = 30, page = 1 } = req.query;
