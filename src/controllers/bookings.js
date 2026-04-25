@@ -250,11 +250,21 @@ export const getBooking = async (req, res) => {
       [booking.id],
     );
 
+    const { rows: reviewRows } = await req.db.query(
+      `SELECT r.rating, r.comment, r.created_at, u.name AS customer_name
+   FROM reviews r
+   JOIN users u ON u.id = r.customer_id
+   WHERE r.booking_id = $1
+   LIMIT 1`,
+      [booking.id],
+    );
+
     return res.json({
       booking,
       emergency_contacts: emergencyContacts,
       latest_location: latestLocation,
       active_sos: sosRows,
+      review: reviewRows[0] || null,
     });
   } catch (err) {
     console.error("[bookings/getBooking]", err);
@@ -445,18 +455,27 @@ export const checkOut = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `UPDATE bookings
-       SET checkout_at = now(), live_tracking_on = false, updated_at = now()
-       WHERE id = $1 AND maid_id = $2
+       SET checkout_at = now(),
+           live_tracking_on = false,
+           updated_at = now()
+       WHERE id = $1
+         AND maid_id = $2
          AND status = 'in_progress'
-         AND checkin_at IS NOT NULL
        RETURNING *`,
       [req.params.id, req.user.id],
     );
 
     if (!rows.length) {
-      return res
-        .status(404)
-        .json({ error: "booking not found or not in progress" });
+      // Give a clear error so we know exactly what failed
+      const { rows: debug } = await req.db.query(
+        `SELECT id, status, maid_id, checkin_at FROM bookings WHERE id = $1`,
+        [req.params.id],
+      );
+      console.error("[checkout] booking state:", debug[0]);
+      return res.status(404).json({
+        error: "Booking not found or not in progress",
+        debug: debug[0],
+      });
     }
 
     return res.json({
