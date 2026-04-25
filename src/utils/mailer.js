@@ -70,14 +70,15 @@ export const transporter = {
 };
 
 // Verify on startup
-transporter
-  .verify()
-  .then(() =>
-    console.log(
-      `✓ Gmail ${process.env.GMAIL_REFRESH_TOKEN ? "OAuth2" : "SMTP"} ready`,
-    ),
-  )
-  .catch((err) => console.warn("⚠️ Gmail:", err.message));
+// Verify on startup
+if (process.env.GMAIL_CLIENT_ID) {
+  console.log("✓ Gmail OAuth2 ready");
+} else {
+  buildTransporter()
+    .then((t) => t.verify())
+    .then(() => console.log("✓ Gmail SMTP ready"))
+    .catch((err) => console.warn("⚠️ Gmail SMTP:", err.message));
+}
 
 // ── Base send ─────────────────────────────────────────────────────────────────
 export async function sendEmail({ to, subject, html }) {
