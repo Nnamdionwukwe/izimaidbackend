@@ -891,16 +891,48 @@ export const adminListPayouts = async (req, res) => {
 
 export const getMaidEarnings = async (req, res) => {
   try {
-    const { rows } = await req.db.query(
-      `SELECT COUNT(*) FILTER (WHERE status='paid')   AS total_paid_count,
-              COUNT(*) FILTER (WHERE status='escrow') AS in_escrow_count,
-              COALESCE(SUM(amount) FILTER (WHERE status='paid'),   0) AS total_earned,
-              COALESCE(SUM(amount) FILTER (WHERE status='escrow'), 0) AS in_escrow,
-              currency
-       FROM maid_payouts WHERE maid_id=$1 GROUP BY currency`,
+    // From maid_payouts (escrow/paid)
+    const { rows: payoutRows } = await req.db.query(
+      `SELECT
+         currency,
+         COUNT(*) FILTER (WHERE status = 'paid')   AS total_paid_count,
+         COUNT(*) FILTER (WHERE status = 'escrow') AS in_escrow_count,
+         COALESCE(SUM(amount) FILTER (WHERE status = 'paid'),   0) AS total_earned,
+         COALESCE(SUM(amount) FILTER (WHERE status = 'escrow'), 0) AS in_escrow
+       FROM maid_payouts
+       WHERE maid_id = $1
+       GROUP BY currency`,
       [req.user.id],
     );
-    return res.json({ earnings: rows });
+
+    // From wallet (covers maids not in maid_payouts)
+    const { rows: walletRows } = await req.db.query(
+      `SELECT currency, available_balance, pending_balance, total_earned
+       FROM maid_wallets WHERE maid_id = $1`,
+      [req.user.id],
+    );
+
+    // Merge both sources by currency
+    const allCurrencies = [
+      ...new Set([
+        ...payoutRows.map((r) => r.currency),
+        ...walletRows.map((r) => r.currency),
+      ]),
+    ];
+
+    const earnings = allCurrencies.map((cur) => {
+      const p = payoutRows.find((r) => r.currency === cur) || {};
+      const w = walletRows.find((r) => r.currency === cur) || {};
+      return {
+        currency: cur,
+        total_paid_count: Number(p.total_paid_count || 0),
+        in_escrow_count: Number(p.in_escrow_count || 0),
+        total_earned: Number(w.total_earned || p.total_earned || 0),
+        in_escrow: Number(p.in_escrow || 0),
+      };
+    });
+
+    return res.json({ earnings });
   } catch (err) {
     console.error("[payments/getMaidEarnings]", err);
     return res.status(500).json({ error: "internal server error" });

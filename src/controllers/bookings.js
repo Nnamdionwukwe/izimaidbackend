@@ -664,17 +664,6 @@ export const triggerSOS = async (req, res) => {
         .catch(console.error);
     }
 
-    for (const recipient of allRecipients) {
-      transporter
-        .sendMail({
-          from: `${process.env.APP_NAME} <${process.env.EMAIL_FROM}>`,
-          to: recipient.email,
-          subject: `🚨 SOS ALERT — ${process.env.APP_NAME}`,
-          html: sosEmailHtml,
-        })
-        .catch(console.error);
-    }
-
     return res.status(201).json({
       message: "SOS alert triggered. Admin and all parties have been notified.",
       sos,
