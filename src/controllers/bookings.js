@@ -4,6 +4,7 @@ import {
   sendNewBookingToMaid,
 } from "../utils/mailer.js";
 import crypto from "crypto";
+import { notify, notifyMany, notifyAdmins } from "../utils/notify.js";
 
 // ─── Helper: get full booking with users ─────────────────────────────
 async function fetchBookingWithUsers(db, bookingId) {
@@ -404,9 +405,7 @@ export const updateStatus = async (req, res) => {
 
 // ─── GPS Check-in ─────────────────────────────────────────────────────
 export const checkIn = async (req, res) => {
-  const { lat, lng } = req.body;
-  if (!lat || !lng)
-    return res.status(400).json({ error: "lat and lng are required" });
+  const { lat, lng } = req.body; // optional — GPS may fail on some devices
 
   try {
     const { rows } = await req.db.query(
@@ -415,30 +414,43 @@ export const checkIn = async (req, res) => {
            checkin_lat = $1,
            checkin_lng = $2,
            live_tracking_on = true,
-           status = 'in_progress',        -- ← THIS WAS MISSING
+           status = 'in_progress',
            updated_at = now()
        WHERE id = $3 AND maid_id = $4
          AND status = 'confirmed'
        RETURNING *`,
-      [lat, lng, req.params.id, req.user.id],
+      [lat || null, lng || null, req.params.id, req.user.id],
     );
 
     if (!rows.length) {
       return res.status(404).json({
-        error: "booking not found, not authorized, or not in confirmed status",
+        error: "Booking not found, not authorized, or not in confirmed status",
       });
     }
 
-    await req.db.query(
-      `INSERT INTO booking_locations (booking_id, maid_id, lat, lng)
-       VALUES ($1, $2, $3, $4)`,
-      [req.params.id, req.user.id, lat, lng],
-    );
+    if (lat && lng) {
+      try {
+        await req.db.query(
+          `INSERT INTO booking_locations (booking_id, maid_id, lat, lng)
+           VALUES ($1, $2, $3, $4)`,
+          [req.params.id, req.user.id, lat, lng],
+        );
+      } catch {}
+    }
+
+    await notify(req.db, {
+      userId: rows[0].customer_id,
+      type: "booking_checkin",
+      title: "🟢 Maid has arrived",
+      body: "Your maid checked in and has started the job.",
+      data: { booking_id: req.params.id },
+      action_url: `/bookings/${req.params.id}`,
+    });
 
     return res.json({
       message: "Checked in successfully",
       booking: rows[0],
-      checkin: { lat, lng, at: new Date() },
+      checkin: { lat: lat || null, lng: lng || null, at: new Date() },
     });
   } catch (err) {
     console.error("[bookings/checkIn]", err);
@@ -448,7 +460,7 @@ export const checkIn = async (req, res) => {
 
 // ─── GPS Check-out ────────────────────────────────────────────────────
 export const checkOut = async (req, res) => {
-  const { lat, lng } = req.body; // optional — Mac may not provide
+  const { lat, lng } = req.body; // optional
 
   try {
     const { rows } = await req.db.query(
@@ -474,7 +486,16 @@ export const checkOut = async (req, res) => {
       });
     }
 
-    // Save location only if provided
+    // ✅ Notify only on success — inside the success block
+    await notify(req.db, {
+      userId: rows[0].customer_id,
+      type: "booking_checkout",
+      title: "🏁 Maid checked out",
+      body: "Your maid has finished. Please mark the job complete and leave a review.",
+      data: { booking_id: req.params.id },
+      action_url: `/bookings/${req.params.id}`,
+    });
+
     if (lat && lng) {
       try {
         await req.db.query(
@@ -495,6 +516,171 @@ export const checkOut = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+// ─── Trigger SOS ──────────────────────────────────────────────────────
+export const triggerSOS = async (req, res) => {
+  const { lat, lng, address, message } = req.body;
+
+  try {
+    const { rows: bookingRows } = await req.db.query(
+      `SELECT b.id, b.customer_id, b.maid_id,
+              c.name as customer_name, c.email as customer_email,
+              m.name as maid_name, m.email as maid_email
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE b.id = $1
+         AND (b.customer_id = $2 OR b.maid_id = $2)
+         AND b.status IN ('confirmed','in_progress')`,
+      [req.params.id, req.user.id],
+    );
+
+    if (!bookingRows.length) {
+      return res.status(404).json({ error: "active booking not found" });
+    }
+
+    const booking = bookingRows[0];
+
+    const { rows: customerEmergency } = await req.db.query(
+      `SELECT name, phone, email, relationship FROM emergency_contacts
+       WHERE user_id = $1 ORDER BY is_primary DESC`,
+      [booking.customer_id],
+    );
+    const { rows: maidEmergency } = await req.db.query(
+      `SELECT name, phone, email, relationship FROM emergency_contacts
+       WHERE user_id = $1 ORDER BY is_primary DESC`,
+      [booking.maid_id],
+    );
+
+    function ecHtml(contacts, label) {
+      if (!contacts.length)
+        return `<p><em>No ${label} emergency contacts on file.</em></p>`;
+      return contacts
+        .map(
+          (c) => `
+        <tr>
+          <td style="padding:6px 12px">${c.name}</td>
+          <td style="padding:6px 12px">${c.relationship}</td>
+          <td style="padding:6px 12px">${c.phone}</td>
+          <td style="padding:6px 12px">${c.email || "—"}</td>
+        </tr>`,
+        )
+        .join("");
+    }
+
+    const { rows } = await req.db.query(
+      `INSERT INTO sos_alerts (booking_id, triggered_by, lat, lng, address, message)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [
+        booking.id,
+        req.user.id,
+        lat || null,
+        lng || null,
+        address || null,
+        message || "SOS triggered",
+      ],
+    );
+
+    const sos = rows[0];
+
+    // ✅ triggeredByName defined BEFORE it's used
+    const triggeredByName =
+      req.user.id === booking.customer_id
+        ? booking.customer_name
+        : booking.maid_name;
+
+    // ✅ Notify calls AFTER triggeredByName is defined
+    await notifyMany(req.db, [booking.customer_id, booking.maid_id], {
+      type: "sos_triggered",
+      title: "🚨 SOS Alert Triggered",
+      body: `SOS triggered by ${triggeredByName}. Emergency contacts have been notified.`,
+      data: { booking_id: req.params.id },
+      action_url: `/bookings/${req.params.id}`,
+      priority: "urgent",
+    });
+
+    await notifyAdmins(req.db, {
+      type: "sos_triggered",
+      title: "🚨 SOS ALERT",
+      body: `SOS triggered by ${triggeredByName} on booking ${req.params.id.slice(0, 8)}. Immediate attention required.`,
+      data: { booking_id: req.params.id },
+      priority: "urgent",
+    });
+
+    const { rows: adminRows } = await req.db.query(
+      `SELECT email, name FROM users WHERE role = 'admin' AND is_active = true`,
+    );
+
+    const sosEmailHtml = `
+      <div style="font-family:sans-serif;max-width:580px;margin:0 auto;padding:32px">
+        <div style="background:#dc2626;padding:20px;border-radius:8px;margin-bottom:24px">
+          <h2 style="color:#fff;margin:0">🚨 SOS ALERT — DEUSIZI SPARKLE</h2>
+        </div>
+        <p><strong>Triggered by:</strong> ${triggeredByName}</p>
+        <p><strong>Booking ID:</strong> ${booking.id}</p>
+        <p><strong>Customer:</strong> ${booking.customer_name}</p>
+        <p><strong>Maid:</strong> ${booking.maid_name}</p>
+        ${lat && lng ? `<p><strong>Location:</strong> <a href="https://www.google.com/maps?q=${lat},${lng}">View on Google Maps (${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)})</a></p>` : ""}
+        ${address ? `<p><strong>Address:</strong> ${address}</p>` : ""}
+        ${message ? `<p><strong>Message:</strong> ${message}</p>` : ""}
+        <p><strong>Time:</strong> ${new Date().toUTCString()}</p>
+        <h3 style="margin-top:24px;color:#dc2626">👤 Customer Emergency Contacts</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="background:#f5f5f5">
+            <th style="padding:6px 12px;text-align:left">Name</th>
+            <th style="padding:6px 12px;text-align:left">Relationship</th>
+            <th style="padding:6px 12px;text-align:left">Phone</th>
+            <th style="padding:6px 12px;text-align:left">Email</th>
+          </tr>
+          ${ecHtml(customerEmergency, "customer")}
+        </table>
+        <h3 style="margin-top:24px;color:#dc2626">🧹 Maid Emergency Contacts</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="background:#f5f5f5">
+            <th style="padding:6px 12px;text-align:left">Name</th>
+            <th style="padding:6px 12px;text-align:left">Relationship</th>
+            <th style="padding:6px 12px;text-align:left">Phone</th>
+            <th style="padding:6px 12px;text-align:left">Email</th>
+          </tr>
+          ${ecHtml(maidEmergency, "maid")}
+        </table>
+      </div>`;
+
+    const allRecipients = [
+      { email: booking.customer_email, name: booking.customer_name },
+      { email: booking.maid_email, name: booking.maid_name },
+      ...adminRows,
+    ];
+
+    const nodemailer = await import("nodemailer");
+    const transporter = nodemailer.default.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT) || 465,
+      secure: true,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+
+    for (const recipient of allRecipients) {
+      transporter
+        .sendMail({
+          from: `${process.env.APP_NAME} <${process.env.EMAIL_FROM}>`,
+          to: recipient.email,
+          subject: `🚨 SOS ALERT — ${process.env.APP_NAME}`,
+          html: sosEmailHtml,
+        })
+        .catch(console.error);
+    }
+
+    return res.status(201).json({
+      message: "SOS alert triggered. Admin and all parties have been notified.",
+      sos,
+    });
+  } catch (err) {
+    console.error("[bookings/triggerSOS]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
 // ─── Update live location (maid pings during job) ─────────────────────
 export const updateLocation = async (req, res) => {
   const { lat, lng, accuracy } = req.body;
@@ -580,159 +766,6 @@ export const getJobLocation = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
-
-// ─── Trigger SOS ──────────────────────────────────────────────────────
-export const triggerSOS = async (req, res) => {
-  const { lat, lng, address, message } = req.body;
-
-  try {
-    // Verify caller is part of the booking
-    const { rows: bookingRows } = await req.db.query(
-      `SELECT b.id, b.customer_id, b.maid_id,
-              c.name as customer_name, c.email as customer_email,
-              m.name as maid_name, m.email as maid_email
-       FROM bookings b
-       JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
-       WHERE b.id = $1
-         AND (b.customer_id = $2 OR b.maid_id = $2)
-         AND b.status IN ('confirmed','in_progress')`,
-      [req.params.id, req.user.id],
-    );
-
-    if (!bookingRows.length) {
-      return res.status(404).json({ error: "active booking not found" });
-    }
-
-    const booking = bookingRows[0];
-
-    const { rows: customerEmergency } = await req.db.query(
-      `SELECT name, phone, email, relationship FROM emergency_contacts
-   WHERE user_id = $1 ORDER BY is_primary DESC`,
-      [booking.customer_id],
-    );
-    const { rows: maidEmergency } = await req.db.query(
-      `SELECT name, phone, email, relationship FROM emergency_contacts
-   WHERE user_id = $1 ORDER BY is_primary DESC`,
-      [booking.maid_id],
-    );
-
-    function ecHtml(contacts, label) {
-      if (!contacts.length)
-        return `<p><em>No ${label} emergency contacts on file.</em></p>`;
-      return contacts
-        .map(
-          (c) => `
-    <tr>
-      <td style="padding:6px 12px">${c.name}</td>
-      <td style="padding:6px 12px">${c.relationship}</td>
-      <td style="padding:6px 12px">${c.phone}</td>
-      <td style="padding:6px 12px">${c.email || "—"}</td>
-    </tr>`,
-        )
-        .join("");
-    }
-
-    const { rows } = await req.db.query(
-      `INSERT INTO sos_alerts (booking_id, triggered_by, lat, lng, address, message)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [
-        booking.id,
-        req.user.id,
-        lat || null,
-        lng || null,
-        address || null,
-        message || "SOS triggered",
-      ],
-    );
-
-    const sos = rows[0];
-
-    // ── Get admin emails ───────────────────────────────────────────
-    const { rows: adminRows } = await req.db.query(
-      `SELECT email, name FROM users WHERE role = 'admin' AND is_active = true`,
-    );
-
-    // ── Send SOS emails to admin + both parties ───────────────────
-    const triggeredByName =
-      req.user.id === booking.customer_id
-        ? booking.customer_name
-        : booking.maid_name;
-
-    const sosEmailHtml = `
-  <div style="font-family:sans-serif;max-width:580px;margin:0 auto;padding:32px">
-    <div style="background:#dc2626;padding:20px;border-radius:8px;margin-bottom:24px">
-      <h2 style="color:#fff;margin:0">🚨 SOS ALERT — DEUSIZI SPARKLE</h2>
-    </div>
-    <p><strong>Triggered by:</strong> ${triggeredByName}</p>
-    <p><strong>Booking ID:</strong> ${booking.id}</p>
-    <p><strong>Customer:</strong> ${booking.customer_name}</p>
-    <p><strong>Maid:</strong> ${booking.maid_name}</p>
-    ${lat && lng ? `<p><strong>Location:</strong> <a href="https://www.google.com/maps?q=${lat},${lng}">View on Google Maps (${lat.toFixed(5)}, ${lng.toFixed(5)})</a></p>` : ""}
-    ${address ? `<p><strong>Address:</strong> ${address}</p>` : ""}
-    ${message ? `<p><strong>Message:</strong> ${message}</p>` : ""}
-    <p><strong>Time:</strong> ${new Date().toUTCString()}</p>
-
-    <h3 style="margin-top:24px;color:#dc2626">👤 Customer Emergency Contacts</h3>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="background:#f5f5f5">
-        <th style="padding:6px 12px;text-align:left">Name</th>
-        <th style="padding:6px 12px;text-align:left">Relationship</th>
-        <th style="padding:6px 12px;text-align:left">Phone</th>
-        <th style="padding:6px 12px;text-align:left">Email</th>
-      </tr>
-      ${ecHtml(customerEmergency, "customer")}
-    </table>
-
-    <h3 style="margin-top:24px;color:#dc2626">🧹 Maid Emergency Contacts</h3>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="background:#f5f5f5">
-        <th style="padding:6px 12px;text-align:left">Name</th>
-        <th style="padding:6px 12px;text-align:left">Relationship</th>
-        <th style="padding:6px 12px;text-align:left">Phone</th>
-        <th style="padding:6px 12px;text-align:left">Email</th>
-      </tr>
-      ${ecHtml(maidEmergency, "maid")}
-    </table>
-  </div>
-`;
-
-    const allRecipients = [
-      { email: booking.customer_email, name: booking.customer_name },
-      { email: booking.maid_email, name: booking.maid_name },
-      ...adminRows,
-    ];
-
-    // Import sendEmail directly — SOS uses custom HTML
-    const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 465,
-      secure: true,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
-
-    for (const recipient of allRecipients) {
-      transporter
-        .sendMail({
-          from: `${process.env.APP_NAME} <${process.env.EMAIL_FROM}>`,
-          to: recipient.email,
-          subject: `🚨 SOS ALERT — ${process.env.APP_NAME}`,
-          html: sosEmailHtml,
-        })
-        .catch(console.error);
-    }
-
-    return res.status(201).json({
-      message: "SOS alert triggered. Admin and all parties have been notified.",
-      sos,
-    });
-  } catch (err) {
-    console.error("[bookings/triggerSOS]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
-
 // ─── Resolve SOS (admin only) ─────────────────────────────────────────
 export const resolveSOSAlert = async (req, res) => {
   try {
@@ -931,6 +964,15 @@ export const submitReview = async (req, res) => {
       [booking.maid_id],
     );
 
+    await notify(req.db, {
+      userId: booking.maid_id,
+      type: "review_received",
+      title: "⭐ New Review",
+      body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
+      data: { booking_id: req.params.id, rating },
+      action_url: `/bookings/${req.params.id}`,
+    });
+
     return res.status(201).json({ review: rows[0] });
   } catch (err) {
     console.error("[bookings/submitReview]", err);
@@ -1034,6 +1076,65 @@ export const updateBookingStatus = async (req, res) => {
     }
 
     const updated = rows[0];
+
+    // Notify the OTHER party about status changes
+    if (status === "confirmed") {
+      await notify(req.db, {
+        userId: booking.customer_id,
+        type: "booking_confirmed",
+        title: "✅ Booking Confirmed",
+        body: `${booking.maid_name} accepted your booking.`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+        priority: "high",
+      });
+    }
+    if (status === "declined") {
+      await notify(req.db, {
+        userId: booking.customer_id,
+        type: "booking_cancelled",
+        title: "❌ Booking Declined",
+        body: `${booking.maid_name} declined your booking.`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+      });
+    }
+    if (status === "cancelled") {
+      // Notify whoever DIDN'T cancel
+      const otherUserId =
+        req.user.role === "customer" ? booking.maid_id : booking.customer_id;
+      const cancellerName =
+        req.user.role === "customer"
+          ? booking.customer_name
+          : booking.maid_name;
+      await notify(req.db, {
+        userId: otherUserId,
+        type: "booking_cancelled",
+        title: "🚫 Booking Cancelled",
+        body: `${cancellerName} cancelled the booking.`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+      });
+    }
+    if (status === "completed") {
+      await notify(req.db, {
+        userId: booking.customer_id,
+        type: "booking_completed",
+        title: "🎉 Job Completed",
+        body: `Your booking with ${booking.maid_name} is complete. Leave a review!`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+      });
+      // Also notify maid
+      await notify(req.db, {
+        userId: booking.maid_id,
+        type: "booking_completed",
+        title: "🎉 Job Marked Complete",
+        body: `Booking with ${booking.customer_name} is complete. Payment is being processed.`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+      });
+    }
 
     return res.json({
       booking: updated,

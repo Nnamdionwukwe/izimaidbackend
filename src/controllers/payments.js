@@ -7,6 +7,8 @@ import {
   sendBookingCancelledEmail,
 } from "../utils/mailer.js";
 
+import { notify } from "../utils/notify.js";
+
 const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
 const PAYSTACK_BASE = "https://api.paystack.co";
 const COINBASE_KEY = process.env.COINBASE_COMMERCE_API_KEY;
@@ -425,6 +427,38 @@ export const verifyPayment = async (req, res) => {
           [booking_id],
         );
         await client.query("COMMIT");
+
+        // Fetch booking parties
+        const { rows: bkN } = await req.db.query(
+          `SELECT b.maid_id, b.customer_id, c.name AS customer_name, m.name AS maid_name
+   FROM bookings b
+   JOIN users c ON c.id = b.customer_id
+   JOIN users m ON m.id = b.maid_id
+   WHERE b.id = $1`,
+          [booking_id],
+        );
+        if (bkN[0]) {
+          // Tell customer payment went through
+          await notify(req.db, {
+            userId: bkN[0].customer_id,
+            type: "payment_received",
+            title: "✅ Payment Successful",
+            body: "Your payment was confirmed. The maid will review and accept shortly.",
+            data: { booking_id },
+            action_url: `/bookings/${booking_id}`,
+            priority: "high",
+          });
+          // Tell maid they have a new booking
+          await notify(req.db, {
+            userId: bkN[0].maid_id,
+            type: "booking_created",
+            title: "💳 New Booking",
+            body: `${bkN[0].customer_name} just booked you. Check your bookings to accept.`,
+            data: { booking_id },
+            action_url: `/bookings/${booking_id}`,
+            priority: "high",
+          });
+        }
       } catch (e) {
         await client.query("ROLLBACK");
         throw e;
@@ -649,6 +683,22 @@ export const adminApproveBooking = async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,'escrow')`,
       [pmt.maid_id, booking_id, pmt.id, pmt.maid_payout, pmt.currency || "NGN"],
     );
+    await notify(req.db, {
+      userId: pmt.maid_id,
+      type: "booking_approved",
+      title: "✅ Booking Approved",
+      body: `Your booking has been approved by admin. Payment is in escrow.`,
+      data: { booking_id },
+      action_url: `/bookings/${booking_id}`,
+    });
+    await notify(req.db, {
+      userId: pmt.customer_id,
+      type: "booking_approved",
+      title: "✅ Booking Approved",
+      body: "Your booking has been approved. The maid will be in touch soon.",
+      data: { booking_id },
+      action_url: `/bookings/${booking_id}`,
+    });
     await req.db.query(
       `UPDATE payments SET payout_status='escrow' WHERE id=$1`,
       [pmt.id],
