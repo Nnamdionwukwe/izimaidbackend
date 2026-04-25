@@ -8,7 +8,7 @@ const FRONTEND =
 // ── Transporter ───────────────────────────────────────────────────────
 export const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 465,
+  port: 465, // ← was 587, change to 465
   secure: true, // ← was false, change to true
   family: 4,
   auth: {
@@ -16,6 +16,9 @@ export const transporter = nodemailer.createTransport({
     pass: process.env.SMTP_PASS,
   },
   tls: { rejectUnauthorized: false },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
 });
 
 transporter
