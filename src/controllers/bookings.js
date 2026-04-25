@@ -448,9 +448,7 @@ export const checkIn = async (req, res) => {
 
 // ─── GPS Check-out ────────────────────────────────────────────────────
 export const checkOut = async (req, res) => {
-  const { lat, lng } = req.body;
-  if (!lat || !lng)
-    return res.status(400).json({ error: "lat and lng are required" });
+  const { lat, lng } = req.body; // optional — Mac may not provide
 
   try {
     const { rows } = await req.db.query(
@@ -466,29 +464,37 @@ export const checkOut = async (req, res) => {
     );
 
     if (!rows.length) {
-      // Give a clear error so we know exactly what failed
       const { rows: debug } = await req.db.query(
-        `SELECT id, status, maid_id, checkin_at FROM bookings WHERE id = $1`,
+        `SELECT id, status, maid_id FROM bookings WHERE id = $1`,
         [req.params.id],
       );
       console.error("[checkout] booking state:", debug[0]);
       return res.status(404).json({
         error: "Booking not found or not in progress",
-        debug: debug[0],
       });
+    }
+
+    // Save location only if provided
+    if (lat && lng) {
+      try {
+        await req.db.query(
+          `INSERT INTO booking_locations (booking_id, maid_id, lat, lng, recorded_at)
+           VALUES ($1, $2, $3, $4, now())`,
+          [req.params.id, req.user.id, lat, lng],
+        );
+      } catch {}
     }
 
     return res.json({
       message: "Checked out successfully",
       booking: rows[0],
-      checkout: { lat, lng, at: new Date() },
+      checkout: { lat: lat || null, lng: lng || null, at: new Date() },
     });
   } catch (err) {
     console.error("[bookings/checkOut]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
-
 // ─── Update live location (maid pings during job) ─────────────────────
 export const updateLocation = async (req, res) => {
   const { lat, lng, accuracy } = req.body;
