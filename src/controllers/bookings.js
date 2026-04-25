@@ -2,6 +2,7 @@ import {
   sendBookingConfirmation,
   sendBookingCancelledEmail,
   sendNewBookingToMaid,
+  transporter,
 } from "../utils/mailer.js";
 import crypto from "crypto";
 import { notify, notifyMany, notifyAdmins } from "../utils/notify.js";
@@ -652,13 +653,16 @@ export const triggerSOS = async (req, res) => {
       ...adminRows,
     ];
 
-    const nodemailer = await import("nodemailer");
-    const transporter = nodemailer.default.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 465,
-      secure: true,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-    });
+    for (const recipient of allRecipients) {
+      transporter
+        .sendMail({
+          from: `${process.env.APP_NAME} <${process.env.EMAIL_FROM || process.env.SMTP_USER}>`,
+          to: recipient.email,
+          subject: `🚨 SOS ALERT — ${process.env.APP_NAME}`,
+          html: sosEmailHtml,
+        })
+        .catch(console.error);
+    }
 
     for (const recipient of allRecipients) {
       transporter

@@ -6,7 +6,7 @@ const FRONTEND =
   process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
 
 // ── Transporter ───────────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
+export const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT) || 587,
   secure: process.env.SMTP_SECURE === "true", // false for port 587
