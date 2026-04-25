@@ -31,6 +31,16 @@ import subscriptionsRoutes from "./src/routes/subscriptions.routes.js";
 import earningsRouter from "./src/routes/earnings.routes.js";
 import walletRouter from "./src/routes/wallet.routes.js";
 
+import { transporter } from "./src/utils/mailer.js";
+
+transporter.verify((error, success) => {
+  if (error) {
+    console.error("❌ SMTP connection failed:", error.message);
+  } else {
+    console.log("✅ SMTP server ready — emails will send");
+  }
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
