@@ -444,7 +444,10 @@ export const adminListMaids = async (req, res) => {
               u.id, u.name, u.avatar, u.is_active,
               mp.bio, mp.hourly_rate, mp.years_exp,
               mp.services, mp.location, mp.rating,
-              mp.total_reviews, mp.is_available
+              mp.total_reviews, mp.is_available,
+              mp.currency, mp.rate_hourly, mp.rate_daily,
+              mp.rate_weekly, mp.rate_monthly, mp.rate_custom,
+              mp.pricing_note, mp.id_verified, mp.background_checked
        FROM maid_profiles mp
        JOIN users u ON u.id = mp.user_id
        ${where}

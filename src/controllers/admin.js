@@ -1224,6 +1224,8 @@ export const listMaids = async (req, res) => {
               u.phone, u.country, u.created_at,
               mp.hourly_rate, mp.rating, mp.total_reviews, mp.is_available,
               mp.id_verified, mp.background_checked, mp.services, mp.location,
+              mp.currency, mp.rate_hourly, mp.rate_daily,
+              mp.rate_weekly, mp.rate_monthly, mp.rate_custom, mp.pricing_note,
               mw.available as wallet_balance, mw.total_earned,
               (SELECT COUNT(*) FROM bookings WHERE maid_id = u.id AND status = 'completed') as completed_bookings,
               (SELECT COUNT(*) FROM maid_documents WHERE maid_id = u.id AND status = 'pending') as pending_docs
