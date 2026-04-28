@@ -1343,9 +1343,30 @@ export const adminGrantSubscription = async (req, res) => {
 };
 
 export const adminManagePlans = async (req, res) => {
-  const { action } = req.body; // 'create','update','toggle'
+  const { action } = req.body;
+
+  // ── Sanitise helpers ──────────────────────────────────────────────
+  // Converts "", "null", null, undefined → null; otherwise → integer
+  const toIntOrNull = (v) =>
+    v !== undefined && v !== null && v !== "" && v !== "null"
+      ? parseInt(v, 10)
+      : null;
+
+  // Converts "", "null", null, undefined → null; otherwise → string
+  const toStrOrNull = (v) =>
+    v !== undefined && v !== null && v !== "" && v !== "null"
+      ? String(v)
+      : null;
+
+  // Ensures a value is a real boolean (handles "true"/"false" strings too)
+  const toBool = (v, fallback = false) => {
+    if (v === true || v === "true") return true;
+    if (v === false || v === "false") return false;
+    return fallback;
+  };
 
   try {
+    // ── CREATE ──────────────────────────────────────────────────────
     if (action === "create") {
       const {
         name,
@@ -1381,27 +1402,46 @@ export const adminManagePlans = async (req, res) => {
         [
           name,
           display_name,
-          description || null,
+          toStrOrNull(description),
           target_role,
           plan_type,
           interval,
           JSON.stringify(prices),
           JSON.stringify(features || []),
-          bookings_per_month || null,
-          discount_percent,
-          priority_matching,
-          dedicated_support,
-          badge || null,
-          trial_days,
-          sort_order,
+          toIntOrNull(bookings_per_month), // blank/null → NULL, not "null"
+          Number(discount_percent) || 0,
+          toBool(priority_matching),
+          toBool(dedicated_support),
+          toStrOrNull(badge), // blank/null → NULL
+          Number(trial_days) || 0,
+          Number(sort_order) || 0,
         ],
       );
       return res.status(201).json({ plan: rows[0] });
     }
 
+    // ── UPDATE ──────────────────────────────────────────────────────
     if (action === "update") {
       const { plan_id, ...updates } = req.body;
       if (!plan_id) return res.status(400).json({ error: "plan_id required" });
+
+      // Columns that must arrive as integer or NULL in Postgres
+      const intCols = new Set([
+        "bookings_per_month",
+        "discount_percent",
+        "trial_days",
+        "sort_order",
+      ]);
+      // Columns that must arrive as text or NULL in Postgres
+      const strNullCols = new Set(["badge", "description"]);
+      // Columns that must arrive as boolean
+      const boolCols = new Set([
+        "priority_matching",
+        "dedicated_support",
+        "is_featured",
+      ]);
+      // Columns stored as JSONB
+      const jsonCols = new Set(["prices", "features"]);
 
       const allowed = [
         "display_name",
@@ -1422,33 +1462,53 @@ export const adminManagePlans = async (req, res) => {
       const params = [];
 
       for (const key of allowed) {
-        if (updates[key] !== undefined) {
-          params.push(
+        if (updates[key] === undefined) continue;
+
+        let value;
+        if (intCols.has(key)) {
+          value = toIntOrNull(updates[key]);
+        } else if (strNullCols.has(key)) {
+          value = toStrOrNull(updates[key]);
+        } else if (boolCols.has(key)) {
+          value = toBool(updates[key]);
+        } else if (jsonCols.has(key)) {
+          value =
             typeof updates[key] === "object"
               ? JSON.stringify(updates[key])
-              : updates[key],
-          );
-          fields.push(`${key} = $${params.length}`);
+              : updates[key];
+        } else {
+          value = updates[key];
         }
+
+        params.push(value);
+        fields.push(`${key} = $${params.length}`);
       }
 
       if (!fields.length)
         return res.status(400).json({ error: "no fields to update" });
+
       params.push(plan_id);
 
       const { rows } = await req.db.query(
-        `UPDATE subscription_plans SET ${fields.join(", ")}, updated_at = now()
-         WHERE id = $${params.length} RETURNING *`,
+        `UPDATE subscription_plans
+         SET ${fields.join(", ")}, updated_at = now()
+         WHERE id = $${params.length}
+         RETURNING *`,
         params,
       );
       return res.json({ plan: rows[0] });
     }
 
+    // ── TOGGLE ──────────────────────────────────────────────────────
     if (action === "toggle") {
       const { plan_id } = req.body;
+      if (!plan_id) return res.status(400).json({ error: "plan_id required" });
+
       const { rows } = await req.db.query(
-        `UPDATE subscription_plans SET is_active = NOT is_active, updated_at = now()
-         WHERE id = $1 RETURNING id, name, is_active`,
+        `UPDATE subscription_plans
+         SET is_active = NOT is_active, updated_at = now()
+         WHERE id = $1
+         RETURNING id, name, is_active`,
         [plan_id],
       );
       return res.json({ plan: rows[0] });
