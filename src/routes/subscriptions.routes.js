@@ -20,6 +20,7 @@ import {
   adminManagePlans,
   adminManagePromoCodes,
   getSubscriptionAnalytics,
+  adminUpdateSubscription,
 } from "../controllers/subscriptions.controller.js";
 
 const router = Router();
@@ -48,6 +49,7 @@ router.post(
 
 // ── Admin ─────────────────────────────────────────────────────────────
 const admin = [requireAuth, requireRole("admin")];
+router.patch("/admin/:id", ...admin, adminUpdateSubscription);
 router.get("/admin", ...admin, adminGetSubscriptions);
 router.get("/admin/analytics", ...admin, getSubscriptionAnalytics);
 router.post("/admin/grant", ...admin, adminGrantSubscription);

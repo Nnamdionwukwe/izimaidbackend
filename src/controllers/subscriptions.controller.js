@@ -1534,52 +1534,74 @@ export const adminManagePromoCodes = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════════
+//  REPLACE getSubscriptionAnalytics in subscriptions.controller.js
+// ══════════════════════════════════════════════════════════════════════
 export const getSubscriptionAnalytics = async (req, res) => {
   try {
-    const [planBreakdown, mrr, churnRate, recentSignups, invoiceStats] =
-      await Promise.all([
-        req.db.query(`
-        SELECT sp.display_name, sp.name, s.status,
-               COUNT(*) as count,
-               COALESCE(SUM(s.amount), 0) as total_revenue
-        FROM subscriptions s
-        JOIN subscription_plans sp ON sp.id = s.plan_id
-        GROUP BY sp.display_name, sp.name, s.status
-        ORDER BY count DESC
-      `),
-        req.db.query(`
-        SELECT
-          COALESCE(SUM(amount) FILTER (WHERE status = 'active'), 0) as mrr,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'trialing'), 0) as trial_mrr,
-          COUNT(*) FILTER (WHERE status = 'active') as active_count,
-          COUNT(*) FILTER (WHERE status = 'trialing') as trial_count,
-          COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_count,
-          COUNT(*) FILTER (WHERE status = 'past_due') as past_due_count
-        FROM subscriptions
-      `),
-        req.db.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE status = 'cancelled' AND cancelled_at >= now() - INTERVAL '30 days') as churned_30d,
-          COUNT(*) FILTER (WHERE status = 'active')   as active_total
-        FROM subscriptions
-      `),
-        req.db.query(`
-        SELECT DATE(s.created_at) as date, COUNT(*) as count,
-               COALESCE(SUM(s.amount), 0) as revenue
-        FROM subscriptions s
-        WHERE s.created_at >= now() - INTERVAL '30 days'
-          AND s.status IN ('active','trialing')
-        GROUP BY DATE(s.created_at)
-        ORDER BY date ASC
-      `),
-        req.db.query(`
-        SELECT status, COUNT(*) as count,
-               COALESCE(SUM(amount), 0) as total
-        FROM subscription_invoices
-        WHERE created_at >= now() - INTERVAL '30 days'
-        GROUP BY status
-      `),
-      ]);
+    const [
+      mrrByCurrency,
+      planBreakdown,
+      churnRate,
+      recentSignups,
+      invoiceStats,
+    ] = await Promise.all([
+      // ── MRR grouped by currency ───────────────────────────────
+      req.db.query(`
+          SELECT
+            COALESCE(currency, 'USD')                                          AS currency,
+            COALESCE(SUM(amount) FILTER (WHERE status = 'active'),    0)       AS mrr,
+            COALESCE(SUM(amount) FILTER (WHERE status = 'trialing'),  0)       AS trial_mrr,
+            COUNT(*) FILTER (WHERE status = 'active')                          AS active_count,
+            COUNT(*) FILTER (WHERE status = 'trialing')                        AS trial_count,
+            COUNT(*) FILTER (WHERE status = 'cancelled')                       AS cancelled_count,
+            COUNT(*) FILTER (WHERE status = 'past_due')                        AS past_due_count
+          FROM subscriptions
+          GROUP BY COALESCE(currency, 'USD')
+          ORDER BY mrr DESC
+        `),
+
+      req.db.query(`
+          SELECT sp.display_name, sp.name, s.status,
+                 COUNT(*) as count,
+                 COALESCE(SUM(s.amount), 0) as total_revenue
+          FROM subscriptions s
+          JOIN subscription_plans sp ON sp.id = s.plan_id
+          GROUP BY sp.display_name, sp.name, s.status
+          ORDER BY count DESC
+        `),
+
+      req.db.query(`
+          SELECT
+            COUNT(*) FILTER (WHERE status = 'cancelled'
+              AND cancelled_at >= now() - INTERVAL '30 days') AS churned_30d,
+            COUNT(*) FILTER (WHERE status = 'active')          AS active_total
+          FROM subscriptions
+        `),
+
+      req.db.query(`
+          SELECT DATE(s.created_at) as date,
+                 COALESCE(s.currency, 'USD') AS currency,
+                 COUNT(*) as count,
+                 COALESCE(SUM(s.amount), 0) as revenue
+          FROM subscriptions s
+          WHERE s.created_at >= now() - INTERVAL '30 days'
+            AND s.status IN ('active','trialing')
+          GROUP BY DATE(s.created_at), COALESCE(s.currency, 'USD')
+          ORDER BY date ASC
+        `),
+
+      req.db.query(`
+          SELECT si.status,
+                 COALESCE(si.currency, 'USD') AS currency,
+                 COUNT(*) as count,
+                 COALESCE(SUM(si.amount), 0) as total
+          FROM subscription_invoices si
+          WHERE si.created_at >= now() - INTERVAL '30 days'
+          GROUP BY si.status, COALESCE(si.currency, 'USD')
+          ORDER BY si.status, currency
+        `),
+    ]);
 
     const churn = churnRate.rows[0];
     const churnPercent =
@@ -1588,14 +1610,139 @@ export const getSubscriptionAnalytics = async (req, res) => {
         : 0;
 
     return res.json({
+      // Array of per-currency MRR rows instead of a single merged object
+      mrr_by_currency: mrrByCurrency.rows,
       plan_breakdown: planBreakdown.rows,
-      mrr: mrr.rows[0],
       churn_rate_30d: `${churnPercent}%`,
       recent_signups: recentSignups.rows,
       invoice_stats: invoiceStats.rows,
     });
   } catch (err) {
     console.error("[subscriptions/getSubscriptionAnalytics]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════
+//  ADD adminUpdateSubscription to subscriptions.controller.js
+//  Add route: router.patch("/admin/:id", ...admin, adminUpdateSubscription)
+// ══════════════════════════════════════════════════════════════════════
+export const adminUpdateSubscription = async (req, res) => {
+  const { id } = req.params;
+  const {
+    status,
+    plan_id,
+    current_period_end,
+    cancel_at_period_end,
+    auto_renew,
+    notes,
+  } = req.body;
+
+  const VALID_STATUSES = [
+    "active",
+    "trialing",
+    "past_due",
+    "paused",
+    "cancelled",
+  ];
+  if (status && !VALID_STATUSES.includes(status)) {
+    return res
+      .status(400)
+      .json({ error: `status must be one of: ${VALID_STATUSES.join(", ")}` });
+  }
+
+  try {
+    // Fetch current subscription
+    const { rows: existing } = await req.db.query(
+      `SELECT s.*, u.name as user_name, sp.name as plan_name
+       FROM subscriptions s
+       JOIN users u ON u.id = s.user_id
+       JOIN subscription_plans sp ON sp.id = s.plan_id
+       WHERE s.id = $1`,
+      [id],
+    );
+    if (!existing.length)
+      return res.status(404).json({ error: "subscription not found" });
+
+    const sub = existing[0];
+    const fields = ["updated_at = now()"];
+    const params = [];
+
+    if (status !== undefined) {
+      params.push(status);
+      fields.push(`status = $${params.length}`);
+      // Set cancelled_at when cancelling
+      if (status === "cancelled" && sub.status !== "cancelled") {
+        fields.push("cancelled_at = now()");
+      }
+    }
+    if (plan_id !== undefined) {
+      // Verify plan exists
+      const { rows: planRows } = await req.db.query(
+        `SELECT id, name, badge FROM subscription_plans WHERE id = $1`,
+        [plan_id],
+      );
+      if (!planRows.length)
+        return res.status(404).json({ error: "plan not found" });
+      params.push(plan_id);
+      fields.push(`plan_id = $${params.length}`);
+      // Update user's plan
+      await req.db.query(
+        `UPDATE users SET subscription_plan = $1, subscription_badge = $2 WHERE id = $3`,
+        [planRows[0].name, planRows[0].badge, sub.user_id],
+      );
+    }
+    if (current_period_end !== undefined) {
+      params.push(new Date(current_period_end));
+      fields.push(`current_period_end = $${params.length}`);
+    }
+    if (cancel_at_period_end !== undefined) {
+      params.push(cancel_at_period_end);
+      fields.push(`cancel_at_period_end = $${params.length}`);
+    }
+    if (auto_renew !== undefined) {
+      params.push(auto_renew);
+      fields.push(`auto_renew = $${params.length}`);
+    }
+
+    params.push(id);
+
+    const { rows } = await req.db.query(
+      `UPDATE subscriptions SET ${fields.join(", ")}
+       WHERE id = $${params.length}
+       RETURNING *`,
+      params,
+    );
+
+    // If cancelled immediately, reset user plan to free
+    if (status === "cancelled") {
+      await req.db.query(
+        `UPDATE users SET subscription_plan = 'free', subscription_badge = null
+         WHERE id = $1`,
+        [sub.user_id],
+      );
+    }
+
+    // Notify user of status change
+    if (status && status !== sub.status) {
+      await req.db.query(
+        `INSERT INTO notifications
+           (user_id, type, title, body, priority, action_url, channel)
+         VALUES ($1,'system_announcement',$2,$3,'high','/settings/subscription','in_app')`,
+        [
+          sub.user_id,
+          `Subscription ${status}`,
+          `Your subscription has been updated to ${status} by an administrator.${notes ? ` Note: ${notes}` : ""}`,
+        ],
+      );
+    }
+
+    return res.json({
+      message: "Subscription updated",
+      subscription: rows[0],
+    });
+  } catch (err) {
+    console.error("[subscriptions/adminUpdateSubscription]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
