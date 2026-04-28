@@ -309,6 +309,7 @@ export const deregisterPushToken = async (req, res) => {
 };
 
 // ── ADMIN: Send announcement to all users ────────────────────────────
+// Replace the existing adminSendAnnouncement with this:
 export const adminSendAnnouncement = async (req, res) => {
   const { title, body, role, priority = "normal", action_url } = req.body;
 
@@ -334,21 +335,22 @@ export const adminSendAnnouncement = async (req, res) => {
       return res.json({ message: "no users to notify", count: 0 });
     }
 
-    // Bulk insert — much faster than individual notify() calls
-    const values = users
-      .map((u, i) => {
-        const base = i * 6;
-        return `($${base + 1},'system_announcement',$${base + 2},$${base + 3},'{}','${priority}','${action_url || ""}','in_app')`;
-      })
-      .join(", ");
-
-    const flat = users.flatMap((u) => [u.id, title, body]);
+    // Use unnest — one clean query, 5 params total, no type inference issues
+    const userIds = users.map((u) => u.id);
 
     await req.db.query(
       `INSERT INTO notifications
          (user_id, type, title, body, data, priority, action_url, channel)
-       VALUES ${values}`,
-      flat,
+       SELECT
+         unnest($1::uuid[]),
+         'system_announcement',
+         $2::text,
+         $3::text,
+         '{}'::jsonb,
+         $4::text,
+         $5::text,
+         'in_app'`,
+      [userIds, title, body, priority, action_url || ""],
     );
 
     return res.json({
@@ -363,6 +365,7 @@ export const adminSendAnnouncement = async (req, res) => {
 };
 
 // ── ADMIN: Send notification to specific user ─────────────────────────
+// Replace the existing adminSendToUser with this:
 export const adminSendToUser = async (req, res) => {
   const {
     user_id,
@@ -380,6 +383,17 @@ export const adminSendToUser = async (req, res) => {
       .json({ error: "user_id, title and body are required" });
   }
 
+  // Validate UUID format before hitting Postgres
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(user_id)) {
+    return res
+      .status(400)
+      .json({
+        error: "user_id must be a valid UUID (e.g. from the Users page)",
+      });
+  }
+
   try {
     const { rows: user } = await req.db.query(
       `SELECT id FROM users WHERE id = $1 AND is_active = true`,
@@ -390,7 +404,7 @@ export const adminSendToUser = async (req, res) => {
     await req.db.query(
       `INSERT INTO notifications
          (user_id, type, title, body, data, priority, action_url, channel)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'in_app')`,
+       VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::jsonb, $6::text, $7::text, 'in_app')`,
       [
         user_id,
         type,
@@ -398,7 +412,7 @@ export const adminSendToUser = async (req, res) => {
         body,
         JSON.stringify(data),
         priority,
-        action_url || null,
+        action_url || "",
       ],
     );
 
