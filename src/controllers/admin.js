@@ -49,52 +49,58 @@ export const getStats = async (req, res) => {
     const [
       users,
       bookings,
-      revenue,
-      withdrawals,
+      revenue, // ← now grouped by currency
+      withdrawals, // ← now grouped by currency + status
       pendingPayments,
       activeSOS,
       pendingDocs,
       recentBookings,
       topMaids,
     ] = await Promise.all([
-      // User counts by role + active status
       req.db.query(`
         SELECT role, is_active, COUNT(*) as count
         FROM users GROUP BY role, is_active
       `),
-      // Booking counts by status
       req.db.query(`
         SELECT status, COUNT(*) as count FROM bookings GROUP BY status
       `),
-      // Revenue breakdown
+
+      // ── Revenue per currency ──────────────────────────────────────
       req.db.query(`
         SELECT
-          COALESCE(SUM(amount), 0)          AS total_gross,
-          COALESCE(SUM(platform_fee), 0)    AS total_platform_fee,
-          COALESCE(SUM(maid_payout), 0)     AS total_maid_payout,
+          COALESCE(currency, 'NGN')              AS currency,
+          COALESCE(SUM(amount),       0)         AS total_gross,
+          COALESCE(SUM(platform_fee), 0)         AS total_platform_fee,
+          COALESCE(SUM(maid_payout),  0)         AS total_maid_payout,
           COUNT(*) FILTER (WHERE status = 'success')  AS paid_count,
           COUNT(*) FILTER (WHERE status = 'refunded') AS refunded_count
         FROM payments
+        GROUP BY COALESCE(currency, 'NGN')
+        ORDER BY total_gross DESC
       `),
-      // Withdrawal summary
+
+      // ── Withdrawals per currency + status ─────────────────────────
       req.db.query(`
-        SELECT status, COUNT(*) as count, COALESCE(SUM(amount), 0) as total
-        FROM withdrawals GROUP BY status
+        SELECT
+          COALESCE(currency, 'NGN') AS currency,
+          status,
+          COUNT(*)                  AS count,
+          COALESCE(SUM(amount), 0)  AS total
+        FROM withdrawals
+        GROUP BY COALESCE(currency, 'NGN'), status
+        ORDER BY currency, status
       `),
-      // Pending payment approvals
-      req.db.query(`
-        SELECT COUNT(*) as count FROM bookings
-        WHERE status = 'pending'
-      `),
-      // Active SOS alerts
-      req.db.query(`
-        SELECT COUNT(*) as count FROM sos_alerts WHERE status = 'active'
-      `),
-      // Pending maid documents
-      req.db.query(`
-        SELECT COUNT(*) as count FROM maid_documents WHERE status = 'pending'
-      `),
-      // Recent bookings (last 7 days)
+
+      req.db.query(
+        `SELECT COUNT(*) as count FROM bookings WHERE status = 'pending'`,
+      ),
+      req.db.query(
+        `SELECT COUNT(*) as count FROM sos_alerts WHERE status = 'active'`,
+      ),
+      req.db.query(
+        `SELECT COUNT(*) as count FROM maid_documents WHERE status = 'pending'`,
+      ),
+
       req.db.query(`
         SELECT DATE(created_at) as date, COUNT(*) as count,
                COALESCE(SUM(total_amount), 0) as revenue
@@ -103,24 +109,37 @@ export const getStats = async (req, res) => {
         GROUP BY DATE(created_at)
         ORDER BY date ASC
       `),
-      // Top 5 maids by earnings
+
+      // ── Top 5 maids — subqueries avoid JOIN multiplication ───────
       req.db.query(`
-        SELECT u.id, u.name, u.avatar,
-               mp.rating, mp.total_reviews,
-               COALESCE(mw.total_earned, 0) as total_earned,
-               COUNT(b.id) FILTER (WHERE b.status = 'completed') as completed_bookings
+        SELECT
+          u.id, u.name, u.avatar,
+          mp.rating, mp.total_reviews,
+          (
+            SELECT COALESCE(json_agg(json_build_object(
+              'currency', mw.currency,
+              'total_earned', mw.total_earned
+            )), '[]'::json)
+            FROM maid_wallets mw
+            WHERE mw.maid_id = u.id
+              AND mw.total_earned > 0
+          ) AS earnings,
+          (
+            SELECT COUNT(*)
+            FROM bookings b
+            WHERE b.maid_id = u.id AND b.status = 'completed'
+          ) AS completed_bookings
         FROM users u
         JOIN maid_profiles mp ON mp.user_id = u.id
-        LEFT JOIN maid_wallets mw ON mw.maid_id = u.id
-        LEFT JOIN bookings b ON b.maid_id = u.id
         WHERE u.role = 'maid' AND u.is_active = true
-        GROUP BY u.id, u.name, u.avatar, mp.rating, mp.total_reviews, mw.total_earned
-        ORDER BY total_earned DESC
+        ORDER BY (
+          SELECT COALESCE(SUM(total_earned), 0)
+          FROM maid_wallets WHERE maid_id = u.id
+        ) DESC
         LIMIT 5
       `),
     ]);
 
-    // Format user stats
     const userStats = {};
     for (const r of users.rows) {
       if (!userStats[r.role])
@@ -134,8 +153,8 @@ export const getStats = async (req, res) => {
       bookings: Object.fromEntries(
         bookings.rows.map((r) => [r.status, Number(r.count)]),
       ),
-      revenue: revenue.rows[0],
-      withdrawals: withdrawals.rows,
+      revenue: revenue.rows, // array of { currency, total_gross, ... }
+      withdrawals: withdrawals.rows, // array of { currency, status, count, total }
       pending_approvals: Number(pendingPayments.rows[0].count),
       active_sos: Number(activeSOS.rows[0].count),
       pending_docs: Number(pendingDocs.rows[0].count),
@@ -160,45 +179,49 @@ export const getRevenueReport = async (req, res) => {
   const groupBy =
     {
       daily: "DATE(p.paid_at)",
-      weekly: "DATE_TRUNC('week', p.paid_at)",
+      weekly: "DATE_TRUNC('week',  p.paid_at)",
       monthly: "DATE_TRUNC('month', p.paid_at)",
     }[period] || "DATE_TRUNC('month', p.paid_at)";
 
   try {
+    // ── Per-currency breakdown ────────────────────────────────────────
     const { rows } = await req.db.query(
       `SELECT
-         ${groupBy} as period,
-         COUNT(*) as transactions,
-         COALESCE(SUM(p.amount), 0) as gross_revenue,
-         COALESCE(SUM(p.platform_fee), 0) as platform_fee,
-         COALESCE(SUM(p.maid_payout), 0) as maid_payouts,
-         COUNT(*) FILTER (WHERE p.gateway = 'paystack') as paystack_count,
-         COUNT(*) FILTER (WHERE p.gateway = 'stripe')   as stripe_count,
-         COUNT(*) FILTER (WHERE p.gateway = 'bank_transfer') as bank_count,
-         COUNT(*) FILTER (WHERE p.gateway = 'crypto')   as crypto_count
+         ${groupBy}                                     AS period,
+         COALESCE(p.currency, 'NGN')                   AS currency,
+         COUNT(*)                                       AS transactions,
+         COALESCE(SUM(p.amount),       0)              AS gross_revenue,
+         COALESCE(SUM(p.platform_fee), 0)              AS platform_fee,
+         COALESCE(SUM(p.maid_payout),  0)              AS maid_payouts,
+         COUNT(*) FILTER (WHERE p.gateway = 'paystack')       AS paystack_count,
+         COUNT(*) FILTER (WHERE p.gateway = 'stripe')         AS stripe_count,
+         COUNT(*) FILTER (WHERE p.gateway = 'bank_transfer')  AS bank_count,
+         COUNT(*) FILTER (WHERE p.gateway = 'crypto')         AS crypto_count
        FROM payments p
        WHERE p.status = 'success'
          AND p.paid_at BETWEEN $1 AND $2
-       GROUP BY 1
-       ORDER BY 1 ASC`,
+       GROUP BY 1, 2
+       ORDER BY 1 ASC, 2`,
       [from, to],
     );
 
-    const totals = rows.reduce(
-      (acc, r) => ({
-        gross: acc.gross + Number(r.gross_revenue),
-        fee: acc.fee + Number(r.platform_fee),
-        payouts: acc.payouts + Number(r.maid_payouts),
-      }),
-      { gross: 0, fee: 0, payouts: 0 },
-    );
+    // ── Totals per currency ───────────────────────────────────────────
+    const totalsMap = {};
+    for (const r of rows) {
+      const c = r.currency;
+      if (!totalsMap[c])
+        totalsMap[c] = { currency: c, gross: 0, fee: 0, payouts: 0 };
+      totalsMap[c].gross += Number(r.gross_revenue);
+      totalsMap[c].fee += Number(r.platform_fee);
+      totalsMap[c].payouts += Number(r.maid_payouts);
+    }
 
     return res.json({
       period,
       date_from: from,
       date_to: to,
       data: rows,
-      totals,
+      totals: Object.values(totalsMap), // array of { currency, gross, fee, payouts }
     });
   } catch (err) {
     console.error("[admin/getRevenueReport]", err);
@@ -1326,34 +1349,58 @@ export const getFinancialOverview = async (req, res) => {
   try {
     const [payments, payouts, withdrawals, escrow] = await Promise.all([
       req.db.query(`
-        SELECT gateway, status, COUNT(*) as count,
-               COALESCE(SUM(amount), 0) as total
-        FROM payments GROUP BY gateway, status
+        SELECT
+          COALESCE(currency, 'NGN') AS currency,
+          gateway, status,
+          COUNT(*)                  AS count,
+          COALESCE(SUM(amount), 0)  AS total
+        FROM payments
+        GROUP BY COALESCE(currency, 'NGN'), gateway, status
+        ORDER BY currency, gateway, status
       `),
+
       req.db.query(`
-        SELECT status, COUNT(*) as count,
-               COALESCE(SUM(amount), 0) as total
-        FROM maid_payouts GROUP BY status
+        SELECT
+          COALESCE(currency, 'NGN') AS currency,
+          status,
+          COUNT(*)                  AS count,
+          COALESCE(SUM(amount), 0)  AS total
+        FROM maid_payouts
+        GROUP BY COALESCE(currency, 'NGN'), status
+        ORDER BY currency, status
       `),
+
       req.db.query(`
-        SELECT method, status, COUNT(*) as count,
-               COALESCE(SUM(amount), 0) as total
-        FROM withdrawals GROUP BY method, status
+        SELECT
+          COALESCE(currency, 'NGN') AS currency,
+          method, status,
+          COUNT(*)                  AS count,
+          COALESCE(SUM(amount), 0)  AS total
+        FROM withdrawals
+        GROUP BY COALESCE(currency, 'NGN'), method, status
+        ORDER BY currency, method, status
       `),
+
+      // ── Wallet totals per currency ────────────────────────────────
       req.db.query(`
-        SELECT COALESCE(SUM(available), 0) as total_available,
-               COALESCE(SUM(pending), 0)   as total_pending,
-               COALESCE(SUM(total_earned), 0) as total_earned,
-               COALESCE(SUM(total_withdrawn), 0) as total_withdrawn
+        SELECT
+          currency,
+          COALESCE(SUM(available_balance), 0) AS total_available,
+          COALESCE(SUM(pending_balance),   0) AS total_pending,
+          COALESCE(SUM(total_earned),      0) AS total_earned,
+          COALESCE(SUM(total_withdrawn),   0) AS total_withdrawn,
+          COUNT(DISTINCT maid_id)             AS maid_count
         FROM maid_wallets
+        GROUP BY currency
+        ORDER BY total_earned DESC
       `),
     ]);
 
     return res.json({
-      payments: payments.rows,
-      payouts: payouts.rows,
-      withdrawals: withdrawals.rows,
-      wallet_totals: escrow.rows[0],
+      payments: payments.rows, // { currency, gateway, status, count, total }
+      payouts: payouts.rows, // { currency, status, count, total }
+      withdrawals: withdrawals.rows, // { currency, method, status, count, total }
+      wallet_totals: escrow.rows, // { currency, total_available, total_pending, ... }
     });
   } catch (err) {
     console.error("[admin/getFinancialOverview]", err);
