@@ -98,7 +98,8 @@ export const initializePayment = async (req, res) => {
         amount: Math.round(customerPays * 100), // kobo — charge the FULL customer amount
         currency: booking.maid_currency || "NGN",
         reference,
-        callback_url: `${process.env.CLIENT_URL}/payment/verify?gateway=paystack`,
+        // In initializePayment, change callback_url:
+        callback_url: `${process.env.CLIENT_URL}/payment/verify?gateway=paystack&booking_id=${booking_id}`,
         metadata: { booking_id, customer_id: req.user.id },
       },
     );
