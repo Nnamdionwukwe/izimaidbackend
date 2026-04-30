@@ -585,3 +585,59 @@ export const resetPassword = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+export async function updateProfile(req, res) {
+  const { name, phone, country } = req.body;
+
+  const fields = [];
+  const params = [];
+
+  if (name !== undefined) {
+    const trimmed = name?.trim();
+    if (!trimmed || trimmed.length < 2) {
+      return res
+        .status(400)
+        .json({ error: "Name must be at least 2 characters" });
+    }
+    params.push(trimmed);
+    fields.push(`name = $${params.length}`);
+  }
+
+  if (phone !== undefined) {
+    if (phone && !/^\+?[\d\s\-()]{7,15}$/.test(phone)) {
+      return res.status(400).json({ error: "Enter a valid phone number" });
+    }
+    params.push(phone || null);
+    fields.push(`phone = $${params.length}`);
+  }
+
+  if (country !== undefined) {
+    params.push(country || null);
+    fields.push(`country = $${params.length}`);
+  }
+
+  if (!fields.length) {
+    return res.status(400).json({ error: "No fields to update" });
+  }
+
+  params.push(req.user.id);
+
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE users
+       SET ${fields.join(", ")}, updated_at = now()
+       WHERE id = $${params.length}
+       RETURNING id, name, email, phone, country, avatar, role`,
+      params,
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    return res.json({ user: rows[0], message: "Profile updated successfully" });
+  } catch (err) {
+    console.error("[auth/updateProfile]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+}
