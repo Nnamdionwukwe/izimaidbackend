@@ -19,7 +19,7 @@ import bookingsRoutes from "./src/routes/bookings.js";
 import paymentsRoutes from "./src/routes/payments.js";
 import adminRoutes from "./src/routes/admin.js";
 import leadsRoutes from "./src/routes/leads.js";
-import customerSupportRoutes from "./src/routes/customer-support.js";
+import customerSupportRoutes from "./src/routes/customer-support-tickets.routes.js";
 import maidSupportRoutes from "./src/routes/maid-support-tickets.routes.js";
 import chatRoutes from "./src/routes/chat.routes.js";
 import supportChatRouter from "./src/routes/customer-admin-livechat.routes.js";

@@ -11,7 +11,7 @@ import {
   getCustomerSupportStats,
   uploadCustomerTicketMedia,
   deleteCustomerTicketMedia,
-} from "../controllers/customer-support.controller.js";
+} from "../controllers/customer-support-tickets.controller.js";
 
 const router = express.Router();
 
