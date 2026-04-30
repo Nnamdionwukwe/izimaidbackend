@@ -12,7 +12,7 @@ import {
   deleteSupportConversation,
   adminGetAllSupportConversations,
   adminGetSupportConversation,
-} from "../controllers/support-chat.controller.js";
+} from "../controllers/customer-admin-livechat.controller.js";
 
 const router = express.Router();
 
