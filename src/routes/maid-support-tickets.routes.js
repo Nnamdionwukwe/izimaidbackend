@@ -11,7 +11,7 @@ import {
   getMaidSupportStats,
   uploadMaidTicketMedia,
   deleteMaidTicketMedia,
-} from "../controllers/maid-support.controller.js";
+} from "../controllers/maid-support-tickets.controller.js";
 
 const router = express.Router();
 

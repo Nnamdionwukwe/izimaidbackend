@@ -12,7 +12,7 @@ import {
   deleteMaidSupportConversation,
   adminGetAllMaidSupportConversations,
   adminGetMaidSupportConversation,
-} from "../controllers/maid-support-chat.controller.js";
+} from "../controllers/maid-admin-livechat.controller.js";
 
 const router = express.Router();
 

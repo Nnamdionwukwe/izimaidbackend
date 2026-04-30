@@ -13,7 +13,7 @@ import {
   adminGetAllConversations,
   adminGetConversation,
   getOrCreateInquiry,
-} from "../controllers/booking-chat.controller.js";
+} from "../controllers/chat.controller.js";
 
 import db from "../config/database.js";
 
