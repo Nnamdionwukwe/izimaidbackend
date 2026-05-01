@@ -695,7 +695,7 @@ export async function sendWithdrawalStatusEmail(
         row("Method", withdrawal.method.replace(/_/g, " "), true),
         row("Status", status, false),
       )}
-      ${btn("View Wallet", `${FRONTEND}/maid/wallet`)}
+      ${btn("View Wallet", `${FRONTEND}/maid`)}
     `),
   });
 }
