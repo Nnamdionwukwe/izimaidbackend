@@ -633,7 +633,7 @@ export async function sendWithdrawalRequestedEmail(maid, withdrawal) {
       <p style="color:#94a3b8;font-size:13px">
         Withdrawals are processed within 24 hours on business days.
       </p>
-      ${btn("View Wallet", `${FRONTEND}/maid/wallet`)}
+      ${btn("View Wallet", `${FRONTEND}/maid`)}
     `),
   });
 }
