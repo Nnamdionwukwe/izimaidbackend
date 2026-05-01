@@ -478,7 +478,11 @@ export async function sendPaymentReceipt(customer, booking, payment) {
           payment.paystack_reference || payment.stripe_payment_id || "N/A",
           false,
         ),
-        row("Amount", `₦${Number(payment.amount).toLocaleString()}`, true),
+        row(
+          "Amount",
+          `${payment.currency || "₦"}${Number(payment.amount).toLocaleString()}`,
+          true,
+        ),
         row(
           "Date",
           new Date(payment.paid_at || Date.now()).toUTCString(),
@@ -525,7 +529,11 @@ export async function sendRefundEmail(customer, booking, amount, reason) {
         Hi ${customer.name}, a refund has been initiated for your cancelled booking.
       </p>
       ${table(
-        row("Amount", `₦${Number(amount).toLocaleString()}`, false),
+        row(
+          "Amount",
+          `${payment.currency || "₦"}${Number(amount).toLocaleString()}`,
+          false,
+        ),
         row("Reason", reason || "Booking cancelled", true),
         row("Date", new Date().toUTCString(), false),
       )}
@@ -553,7 +561,7 @@ export async function sendBankTransferInstructions(
       ${table(
         row(
           "Amount",
-          `₦${Number(transferDetails.amount).toLocaleString()}`,
+          `${transferDetails.currency || "₦"}${Number(transferDetails.amount).toLocaleString()}`,
           false,
         ),
         row("Bank", transferDetails.bank_name, true),
