@@ -641,3 +641,57 @@ export async function updateProfile(req, res) {
     return res.status(500).json({ error: "internal server error" });
   }
 }
+
+// ADD this to src/controllers/auth.js
+// Also add to imports at top: import { uploadMediaToCloudinary } from "../utils/cloudinary-utils.js";
+
+export const uploadAvatar = async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "No file provided" });
+    }
+
+    // 5MB limit
+    if (file.size > 5 * 1024 * 1024) {
+      return res.status(400).json({ error: "Image must be under 5MB" });
+    }
+
+    const validTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+    if (!validTypes.includes(file.mimetype)) {
+      return res
+        .status(400)
+        .json({ error: "Only JPG, PNG, WebP and GIF are allowed" });
+    }
+
+    // Upload to Cloudinary
+    const { uploadMediaToCloudinary } =
+      await import("../utils/cloudinary-utils.js");
+    const result = await uploadMediaToCloudinary(
+      file.buffer,
+      "image",
+      `avatars/${req.user.id}`,
+    );
+
+    // Update user avatar URL
+    const { rows } = await req.db.query(
+      `UPDATE users SET avatar = $1, updated_at = now()
+       WHERE id = $2
+       RETURNING id, name, email, avatar, role, phone, country`,
+      [result.url, req.user.id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Bust cache
+    const { safeDel } = await import("../config/redis.js");
+    await safeDel(`user:${req.user.id}`);
+
+    return res.json({ user: rows[0], avatar: result.url });
+  } catch (err) {
+    console.error("[auth/uploadAvatar]", err);
+    return res.status(500).json({ error: "Failed to upload avatar" });
+  }
+};
