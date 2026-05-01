@@ -719,7 +719,7 @@ export async function sendWithdrawalAdminAlertEmail(admins, maid, withdrawal) {
         false,
       ),
     )}
-    ${btn("Review in Admin", `${FRONTEND}/admin/withdrawals`)}
+    ${btn("Review in Admin", `${FRONTEND}/admin`)}
   `);
 
   for (const admin of admins) {
