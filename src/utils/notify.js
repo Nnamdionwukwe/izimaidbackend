@@ -104,8 +104,6 @@ function prefAllowed(prefs, type, channel) {
 }
 
 // ── Core notify function ──────────────────────────────────────────────
-// src/utils/notify.js — replace the core notify function only
-
 export async function notify(
   db,
   {
@@ -118,15 +116,15 @@ export async function notify(
     action_url = null,
     image_url = null,
     expires_at = null,
-    sendMail,
-    sendPush,
+    sendMail, // optional async fn — () => sendXxxEmail(...)
+    sendPush, // optional async fn — for future push notifications
   },
 ) {
-  const prefs = await getPrefs(db, userId);
+  try {
+    const prefs = await getPrefs(db, userId);
 
-  // ── In-app notification — isolated try/catch so it never blocks email ──
-  if (prefAllowed(prefs, type, "inapp")) {
-    try {
+    // ── In-app notification ───────────────────────────────────────
+    if (prefAllowed(prefs, type, "inapp")) {
       await db.query(
         `INSERT INTO notifications
            (user_id, type, title, body, data, priority, action_url, image_url, expires_at, channel)
@@ -143,31 +141,26 @@ export async function notify(
           expires_at,
         ],
       );
-    } catch (err) {
-      // Log but DO NOT return — email must still fire
-      console.error(
-        `[notify] In-app insert failed for ${type} user ${userId}:`,
-        err.message,
+    }
+
+    // ── Email notification ────────────────────────────────────────
+    if (sendMail && prefAllowed(prefs, type, "email")) {
+      sendMail().catch((err) =>
+        console.error(`[notify] Email failed for ${type}:`, err.message),
       );
     }
-  }
 
-  // ── Email — runs regardless of whether in-app succeeded ──────────────
-  if (sendMail && prefAllowed(prefs, type, "email")) {
-    try {
-      await sendMail(); // ← await instead of fire-and-forget so errors surface
-    } catch (err) {
-      console.error(
-        `[notify] Email failed for ${type} user ${userId}:`,
-        err.message,
+    // ── Push notification (future — placeholder) ──────────────────
+    if (sendPush && prefAllowed(prefs, type, "push")) {
+      sendPush().catch((err) =>
+        console.error(`[notify] Push failed for ${type}:`, err.message),
       );
     }
-  }
-
-  // ── Push (future) ────────────────────────────────────────────────────
-  if (sendPush && prefAllowed(prefs, type, "push")) {
-    sendPush().catch((err) =>
-      console.error(`[notify] Push failed for ${type}:`, err.message),
+  } catch (err) {
+    // Never crash the request — notifications are non-critical
+    console.error(
+      `[notify] Failed for user ${userId} type ${type}:`,
+      err.message,
     );
   }
 }
@@ -180,27 +173,14 @@ export async function notifyMany(db, userIds, notifData) {
 }
 
 // ── Notify all admins ─────────────────────────────────────────────────
-// src/utils/notify.js — replace notifyAdmins only
-
-export async function notifyAdmins(db, { sendMail, ...notifData }) {
+export async function notifyAdmins(db, notifData) {
   try {
     const { rows } = await db.query(
       `SELECT id FROM users WHERE role = 'admin' AND is_active = true`,
     );
-
-    // In-app notifications — one per admin, no email passed here
     await Promise.allSettled(
       rows.map((admin) => notify(db, { ...notifData, userId: admin.id })),
     );
-
-    // Email — fire ONCE for all admins (the sendMail fn already loops internally)
-    if (typeof sendMail === "function") {
-      try {
-        await sendMail();
-      } catch (err) {
-        console.error("[notifyAdmins] Email failed:", err.message);
-      }
-    }
   } catch (err) {
     console.error("[notifyAdmins] Failed:", err.message);
   }
