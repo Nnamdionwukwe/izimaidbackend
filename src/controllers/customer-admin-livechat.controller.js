@@ -5,6 +5,8 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
+import { sendSupportChatMessageEmail } from "../utils/mailer.js";
+
 // ─── Get or create a support conversation between customer and admin ──
 export async function getOrCreateSupportConversation(req, res) {
   try {
@@ -182,7 +184,7 @@ export async function sendSupportMessage(req, res) {
       [isCustomer, conversationId],
     );
 
-    const enriched = await db.query(
+    const enrichedMsg = await db.query(
       `SELECT m.*, u.name AS sender_name, u.role AS sender_role
        FROM support_messages m
        JOIN users u ON u.id = m.sender_id
@@ -190,7 +192,41 @@ export async function sendSupportMessage(req, res) {
       [message.id],
     );
 
-    res.status(201).json({ message: enriched.rows[0] });
+    // ── Send email notification to the OTHER party ────────────────────
+    // If customer sent → email all admins. If admin sent → email customer.
+    (async () => {
+      try {
+        const senderName = enrichedMsg.rows[0].sender_name;
+        const preview = trimmedContent.slice(0, 200);
+
+        if (isCustomer) {
+          // Notify admin(s)
+          const { rows: admins } = await db.query(
+            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+          );
+          for (const admin of admins) {
+            sendSupportChatMessageEmail(admin, senderName, preview).catch(
+              console.error,
+            );
+          }
+        } else {
+          // Notify customer
+          const { rows: custRows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [conversation.customer_id],
+          );
+          if (custRows[0]) {
+            sendSupportChatMessageEmail(custRows[0], senderName, preview).catch(
+              console.error,
+            );
+          }
+        }
+      } catch (e) {
+        console.error("[support-chat/email]", e);
+      }
+    })();
+
+    res.status(201).json({ message: enrichedMsg.rows[0] });
   } catch (err) {
     console.error("[support-chat] sendSupportMessage error:", err.message);
     res.status(500).json({ error: "Failed to send message" });
@@ -272,6 +308,35 @@ export async function sendSupportMediaMessage(req, res) {
        WHERE m.id = $1`,
       [messageResult.rows[0].id],
     );
+
+    (async () => {
+      try {
+        const senderName = enriched.rows[0].sender_name;
+        const preview = `[${mediaType === "video" ? "Video" : "Image"} attachment]`;
+        if (isCustomer) {
+          const { rows: admins } = await db.query(
+            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+          );
+          for (const admin of admins) {
+            sendSupportChatMessageEmail(admin, senderName, preview).catch(
+              console.error,
+            );
+          }
+        } else {
+          const { rows: custRows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [conversation.customer_id],
+          );
+          if (custRows[0]) {
+            sendSupportChatMessageEmail(custRows[0], senderName, preview).catch(
+              console.error,
+            );
+          }
+        }
+      } catch (e) {
+        console.error("[support-chat/email/media]", e);
+      }
+    })();
 
     res.status(201).json({ message: enriched.rows[0] });
   } catch (err) {

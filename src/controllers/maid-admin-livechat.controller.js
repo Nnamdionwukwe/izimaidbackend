@@ -5,6 +5,8 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
+import { sendMaidSupportChatMessageEmail } from "../utils/mailer.js";
+
 // ─── Get or create a support conversation between maid and admin ──────
 export async function getOrCreateMaidSupportConversation(req, res) {
   try {
@@ -189,6 +191,39 @@ export async function sendMaidSupportMessage(req, res) {
       [message.id],
     );
 
+    (async () => {
+      try {
+        const senderName = enriched.rows[0].sender_name;
+        const preview = trimmedContent.slice(0, 200);
+        if (isMaid) {
+          // Notify admin(s)
+          const { rows: admins } = await db.query(
+            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+          );
+          for (const admin of admins) {
+            sendMaidSupportChatMessageEmail(admin, senderName, preview).catch(
+              console.error,
+            );
+          }
+        } else {
+          // Notify the maid
+          const { rows: maidRows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [conversation.maid_id],
+          );
+          if (maidRows[0]) {
+            sendMaidSupportChatMessageEmail(
+              maidRows[0],
+              senderName,
+              preview,
+            ).catch(console.error);
+          }
+        }
+      } catch (e) {
+        console.error("[maid-support-chat/email]", e);
+      }
+    })();
+
     res.status(201).json({ message: enriched.rows[0] });
   } catch (err) {
     console.error(
@@ -274,6 +309,37 @@ export async function sendMaidSupportMediaMessage(req, res) {
        WHERE m.id = $1`,
       [messageResult.rows[0].id],
     );
+
+    (async () => {
+      try {
+        const senderName = enriched.rows[0].sender_name;
+        const preview = `[${mediaType === "video" ? "Video" : "Image"} attachment]`;
+        if (isMaid) {
+          const { rows: admins } = await db.query(
+            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+          );
+          for (const admin of admins) {
+            sendMaidSupportChatMessageEmail(admin, senderName, preview).catch(
+              console.error,
+            );
+          }
+        } else {
+          const { rows: maidRows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [conversation.maid_id],
+          );
+          if (maidRows[0]) {
+            sendMaidSupportChatMessageEmail(
+              maidRows[0],
+              senderName,
+              preview,
+            ).catch(console.error);
+          }
+        }
+      } catch (e) {
+        console.error("[maid-support-chat/email/media]", e);
+      }
+    })();
 
     res.status(201).json({ message: enriched.rows[0] });
   } catch (err) {

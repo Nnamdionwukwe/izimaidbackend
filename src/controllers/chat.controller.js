@@ -5,6 +5,8 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
+import { sendBookingChatMessageEmail } from "../utils/mailer.js";
+
 // ─── Get or create a conversation between customer and maid ──────────
 export async function getOrCreateConversation(req, res) {
   try {
@@ -204,6 +206,33 @@ export async function sendMessage(req, res) {
       [message.id],
     );
 
+    (async () => {
+      try {
+        const senderName = enriched.rows[0].sender_name;
+        const preview = trimmedContent.slice(0, 200);
+        const isFromCustomer = userId === conversation.customer_id;
+
+        // Recipient = the OTHER party
+        const recipientId = isFromCustomer
+          ? conversation.maid_id
+          : conversation.customer_id;
+        const { rows: recipientRows } = await db.query(
+          `SELECT name, email FROM users WHERE id = $1`,
+          [recipientId],
+        );
+        if (recipientRows[0]) {
+          sendBookingChatMessageEmail(
+            recipientRows[0],
+            senderName,
+            preview,
+            conversation.booking_id,
+          ).catch(console.error);
+        }
+      } catch (e) {
+        console.error("[chat/email]", e);
+      }
+    })();
+
     res.status(201).json({ message: enriched.rows[0] });
   } catch (err) {
     console.error("Error sending message:", err);
@@ -288,6 +317,31 @@ export async function sendMediaMessage(req, res) {
        WHERE m.id = $1`,
       [messageResult.rows[0].id],
     );
+
+    (async () => {
+      try {
+        const senderName = enriched.rows[0].sender_name;
+        const preview = `[${mediaType === "video" ? "Video" : "Image"} attachment]`;
+        const isFromCustomer = userId === conversation.customer_id;
+        const recipientId = isFromCustomer
+          ? conversation.maid_id
+          : conversation.customer_id;
+        const { rows: recipientRows } = await db.query(
+          `SELECT name, email FROM users WHERE id = $1`,
+          [recipientId],
+        );
+        if (recipientRows[0]) {
+          sendBookingChatMessageEmail(
+            recipientRows[0],
+            senderName,
+            preview,
+            conversation.booking_id,
+          ).catch(console.error);
+        }
+      } catch (e) {
+        console.error("[chat/email/media]", e);
+      }
+    })();
 
     res.status(201).json({ message: enriched.rows[0] });
   } catch (err) {

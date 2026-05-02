@@ -1046,3 +1046,271 @@ export async function sendProBadgeActivatedEmail(maid) {
     `),
   });
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// FILE: src/utils/mailer.js
+// ACTION: Append ALL of the following functions to the BOTTOM of mailer.js
+// ══════════════════════════════════════════════════════════════════════
+
+// ─── SUPPORT LIVE CHAT (Customer ↔ Admin) ─────────────────────────────
+
+export async function sendSupportChatMessageEmail(
+  recipient,
+  senderName,
+  messagePreview,
+) {
+  return sendEmail({
+    to: recipient.email,
+    subject: `New message from ${senderName} — ${APP_NAME} Support`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">New Support Message 💬</h2>
+      <p style="color:#475569">
+        Hi ${recipient.name}, you have a new message from <strong>${senderName}</strong>
+        in your support conversation.
+      </p>
+      <div style="background:#f8fafc;border-left:4px solid #1e3a8a;
+                  padding:12px 16px;border-radius:4px;margin:16px 0;
+                  font-size:14px;color:#334155;line-height:1.6">
+        "${messagePreview.length > 200 ? messagePreview.slice(0, 200) + "…" : messagePreview}"
+      </div>
+      ${btn("Open Support Chat", `${FRONTEND}/support/chat`)}
+      <p style="color:#94a3b8;font-size:13px">
+        You can reply directly in the app.
+      </p>
+    `),
+  });
+}
+
+// ─── MAID SUPPORT LIVE CHAT (Maid ↔ Admin) ───────────────────────────
+
+export async function sendMaidSupportChatMessageEmail(
+  recipient,
+  senderName,
+  messagePreview,
+) {
+  return sendEmail({
+    to: recipient.email,
+    subject: `New message from ${senderName} — ${APP_NAME} Maid Support`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">New Maid Support Message 🧹</h2>
+      <p style="color:#475569">
+        Hi ${recipient.name}, you have a new message from <strong>${senderName}</strong>
+        in your maid support conversation.
+      </p>
+      <div style="background:#f8fafc;border-left:4px solid #1e3a8a;
+                  padding:12px 16px;border-radius:4px;margin:16px 0;
+                  font-size:14px;color:#334155;line-height:1.6">
+        "${messagePreview.length > 200 ? messagePreview.slice(0, 200) + "…" : messagePreview}"
+      </div>
+      ${btn("Open Maid Support Chat", `${FRONTEND}/maid/support/chat`)}
+      <p style="color:#94a3b8;font-size:13px">
+        You can reply directly in the app.
+      </p>
+    `),
+  });
+}
+
+// ─── BOOKING CHAT (Customer ↔ Maid) ──────────────────────────────────
+
+export async function sendBookingChatMessageEmail(
+  recipient,
+  senderName,
+  messagePreview,
+  bookingId,
+) {
+  return sendEmail({
+    to: recipient.email,
+    subject: `New message from ${senderName} — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">New Message 💬</h2>
+      <p style="color:#475569">
+        Hi ${recipient.name}, <strong>${senderName}</strong> sent you a message
+        about your booking.
+      </p>
+      <div style="background:#f8fafc;border-left:4px solid #1e3a8a;
+                  padding:12px 16px;border-radius:4px;margin:16px 0;
+                  font-size:14px;color:#334155;line-height:1.6">
+        "${messagePreview.length > 200 ? messagePreview.slice(0, 200) + "…" : messagePreview}"
+      </div>
+      ${btn("Open Chat", `${FRONTEND}/bookings/${bookingId}`)}
+    `),
+  });
+}
+
+// ─── SUPPORT TICKETS — Customer ───────────────────────────────────────
+
+export async function sendCustomerTicketCreatedEmail(user, ticket) {
+  return sendEmail({
+    to: user.email,
+    subject: `Support ticket #${ticket.id.toString().slice(0, 8)} opened — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">Ticket Received 🎫</h2>
+      <p style="color:#475569">Hi ${user.name}, we received your support request and will get back to you shortly.</p>
+      ${table(
+        row("Ticket ID", `#${ticket.id.toString().slice(0, 8)}`, false),
+        row("Subject", ticket.subject, true),
+        row("Category", ticket.category, false),
+        row("Priority", ticket.priority, true),
+        row("Status", "Open", false),
+      )}
+      <p style="color:#94a3b8;font-size:13px">
+        Our team typically responds within 24 hours on business days.
+      </p>
+      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
+    `),
+  });
+}
+
+export async function sendCustomerTicketReplyEmail(
+  user,
+  ticket,
+  replyMessage,
+  replierName,
+) {
+  return sendEmail({
+    to: user.email,
+    subject: `New reply on your ticket — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">New Reply on Your Ticket 💬</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, <strong>${replierName}</strong> replied to your support ticket
+        "<strong>${ticket.subject}</strong>".
+      </p>
+      <div style="background:#f8fafc;border-left:4px solid #1e3a8a;
+                  padding:12px 16px;border-radius:4px;margin:16px 0;
+                  font-size:14px;color:#334155;line-height:1.6">
+        "${replyMessage.length > 300 ? replyMessage.slice(0, 300) + "…" : replyMessage}"
+      </div>
+      ${btn("View & Reply", `${FRONTEND}/support/tickets/${ticket.id}`)}
+    `),
+  });
+}
+
+export async function sendCustomerTicketStatusEmail(user, ticket, newStatus) {
+  const cfg = {
+    in_progress: {
+      color: "#0284c7",
+      icon: "⏳",
+      label: "In Progress",
+      text: "is now being worked on by our team.",
+    },
+    resolved: {
+      color: "#16a34a",
+      icon: "✅",
+      label: "Resolved",
+      text: "has been resolved.",
+    },
+    closed: {
+      color: "#64748b",
+      icon: "🔒",
+      label: "Closed",
+      text: "has been closed.",
+    },
+  }[newStatus] || {
+    color: "#1e293b",
+    icon: "📋",
+    label: newStatus,
+    text: `is now ${newStatus}.`,
+  };
+
+  return sendEmail({
+    to: user.email,
+    subject: `Ticket ${cfg.label} — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:${cfg.color};margin:0 0 8px">${cfg.icon} Ticket ${cfg.label}</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your support ticket "<strong>${ticket.subject}</strong>" ${cfg.text}
+      </p>
+      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
+    `),
+  });
+}
+
+// ─── SUPPORT TICKETS — Maid ───────────────────────────────────────────
+
+export async function sendMaidTicketCreatedEmail(user, ticket) {
+  return sendEmail({
+    to: user.email,
+    subject: `Maid support ticket #${ticket.id.toString().slice(0, 8)} opened — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">Ticket Received 🧹</h2>
+      <p style="color:#475569">Hi ${user.name}, we received your maid support request.</p>
+      ${table(
+        row("Ticket ID", `#${ticket.id.toString().slice(0, 8)}`, false),
+        row("Subject", ticket.subject, true),
+        row("Category", ticket.category, false),
+        row("Priority", ticket.priority, true),
+        row("Status", "Open", false),
+      )}
+      <p style="color:#94a3b8;font-size:13px">
+        Our team typically responds within 24 hours on business days.
+      </p>
+      ${btn("View Ticket", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+    `),
+  });
+}
+
+export async function sendMaidTicketReplyEmail(
+  user,
+  ticket,
+  replyMessage,
+  replierName,
+) {
+  return sendEmail({
+    to: user.email,
+    subject: `New reply on your maid ticket — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:#1e293b;margin:0 0 8px">New Reply on Your Ticket 💬</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, <strong>${replierName}</strong> replied to your ticket
+        "<strong>${ticket.subject}</strong>".
+      </p>
+      <div style="background:#f8fafc;border-left:4px solid #1e3a8a;
+                  padding:12px 16px;border-radius:4px;margin:16px 0;
+                  font-size:14px;color:#334155;line-height:1.6">
+        "${replyMessage.length > 300 ? replyMessage.slice(0, 300) + "…" : replyMessage}"
+      </div>
+      ${btn("View & Reply", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+    `),
+  });
+}
+
+export async function sendMaidTicketStatusEmail(user, ticket, newStatus) {
+  const cfg = {
+    in_progress: {
+      color: "#0284c7",
+      icon: "⏳",
+      label: "In Progress",
+      text: "is now being worked on.",
+    },
+    resolved: {
+      color: "#16a34a",
+      icon: "✅",
+      label: "Resolved",
+      text: "has been resolved.",
+    },
+    closed: {
+      color: "#64748b",
+      icon: "🔒",
+      label: "Closed",
+      text: "has been closed.",
+    },
+  }[newStatus] || {
+    color: "#1e293b",
+    icon: "📋",
+    label: newStatus,
+    text: `is now ${newStatus}.`,
+  };
+
+  return sendEmail({
+    to: user.email,
+    subject: `Maid ticket ${cfg.label} — ${APP_NAME}`,
+    html: wrap(`
+      <h2 style="color:${cfg.color};margin:0 0 8px">${cfg.icon} Ticket ${cfg.label}</h2>
+      <p style="color:#475569">
+        Hi ${user.name}, your maid support ticket "<strong>${ticket.subject}</strong>" ${cfg.text}
+      </p>
+      ${btn("View Ticket", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+    `),
+  });
+}

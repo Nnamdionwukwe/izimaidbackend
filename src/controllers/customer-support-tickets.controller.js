@@ -5,6 +5,12 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
+import {
+  sendCustomerTicketCreatedEmail,
+  sendCustomerTicketReplyEmail,
+  sendCustomerTicketStatusEmail,
+} from "../utils/mailer.js";
+
 // Create a new customer support ticket
 export async function createCustomerSupportTicket(req, res) {
   try {
@@ -30,6 +36,34 @@ export async function createCustomerSupportTicket(req, res) {
        RETURNING *`,
       [userId, subject, message, category, ticketPriority],
     );
+
+    // Email the customer a confirmation
+    (async () => {
+      try {
+        const { rows: userRows } = await db.query(
+          `SELECT name, email FROM users WHERE id = $1`,
+          [userId],
+        );
+        if (userRows[0]) {
+          sendCustomerTicketCreatedEmail(userRows[0], result.rows[0]).catch(
+            console.error,
+          );
+        }
+        // Email all admins so they know a new ticket arrived
+        const { rows: admins } = await db.query(
+          `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+        );
+        for (const admin of admins) {
+          sendEmail({
+            to: admin.email,
+            subject: `New customer support ticket — ${process.env.APP_NAME}`,
+            html: `<p>New ticket from customer. Subject: <strong>${result.rows[0].subject}</strong>. Category: ${result.rows[0].category}.</p>`,
+          }).catch(console.error);
+        }
+      } catch (e) {
+        console.error("[customer-support/email]", e);
+      }
+    })();
 
     res.status(201).json({
       message: "Support ticket created successfully",
@@ -314,6 +348,29 @@ export async function updateCustomerSupportTicket(req, res) {
       return res.status(404).json({ error: "Support ticket not found" });
     }
 
+    (async () => {
+      try {
+        const { rows: custRows } = await db.query(
+          `SELECT u.name, u.email FROM users u
+           JOIN customer_support_tickets t ON t.user_id = u.id
+           WHERE t.id = $1`,
+          [id],
+        );
+        if (
+          custRows[0] &&
+          ["in_progress", "resolved", "closed"].includes(status)
+        ) {
+          sendCustomerTicketStatusEmail(
+            custRows[0],
+            result.rows[0],
+            status,
+          ).catch(console.error);
+        }
+      } catch (e) {
+        console.error("[customer-support/status/email]", e);
+      }
+    })();
+
     res.json({
       message: "Support ticket updated successfully",
       ticket: result.rows[0],
@@ -366,6 +423,46 @@ export async function replyCustomerSupportTicket(req, res) {
       `UPDATE customer_support_tickets SET updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [id],
     );
+
+    (async () => {
+      try {
+        const replierRows = await db.query(
+          `SELECT name FROM users WHERE id = $1`,
+          [userId],
+        );
+        const replierName = replierRows.rows[0]?.name || "Support Team";
+
+        if (userRole === "admin") {
+          // Admin replied → email the customer
+          const { rows: custRows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [ticket.user_id],
+          );
+          if (custRows[0]) {
+            sendCustomerTicketReplyEmail(
+              custRows[0],
+              ticket,
+              message,
+              replierName,
+            ).catch(console.error);
+          }
+        } else {
+          // Customer replied → email all admins
+          const { rows: admins } = await db.query(
+            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+          );
+          for (const admin of admins) {
+            sendEmail({
+              to: admin.email,
+              subject: `Customer replied to ticket — ${process.env.APP_NAME}`,
+              html: `<p>Customer replied to ticket: <strong>${ticket.subject}</strong>.</p><p>${message}</p>`,
+            }).catch(console.error);
+          }
+        }
+      } catch (e) {
+        console.error("[customer-support/reply/email]", e);
+      }
+    })();
 
     res.status(201).json({
       message: "Reply added successfully",
