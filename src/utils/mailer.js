@@ -66,6 +66,7 @@ async function sendViaSMTP({ to, subject, html }) {
 
 // ── Base send — auto picks Gmail API or SMTP ──────────────────────────
 export async function sendEmail({ to, subject, html }) {
+  console.log(`[EMAIL] ► Sending to ${to} | subject: "${subject}"`); // ← add
   try {
     const useGmailAPI = !!(
       process.env.GMAIL_CLIENT_ID &&
