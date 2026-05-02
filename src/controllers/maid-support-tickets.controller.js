@@ -9,7 +9,10 @@ import {
   sendMaidTicketCreatedEmail,
   sendMaidTicketReplyEmail,
   sendMaidTicketStatusEmail,
+  sendEmail,
 } from "../utils/mailer.js";
+
+import { notify, notifyAdmins } from "../utils/notify.js";
 
 // Create a new maid support ticket
 export async function createMaidSupportTicket(req, res) {
@@ -37,31 +40,39 @@ export async function createMaidSupportTicket(req, res) {
       [userId, subject, message, category, ticketPriority],
     );
 
-    (async () => {
-      try {
-        const { rows: userRows } = await db.query(
+    await notify(db, {
+      userId,
+      type: "ticket_created",
+      title: "Support ticket received 🎫",
+      body: `Your ticket "${subject}" has been submitted. We'll respond within 24 hours.`,
+      action_url: `/maid/support/tickets/${result.rows[0].id}`,
+      sendMail: async () => {
+        const { rows } = await db.query(
           `SELECT name, email FROM users WHERE id = $1`,
           [userId],
         );
-        if (userRows[0]) {
-          sendMaidTicketCreatedEmail(userRows[0], result.rows[0]).catch(
-            console.error,
-          );
-        }
+        if (rows[0]) return sendMaidTicketCreatedEmail(rows[0], result.rows[0]);
+      },
+    });
+
+    await notifyAdmins(db, {
+      type: "ticket_created",
+      title: `New maid support ticket 🎫`,
+      body: `A maid opened a ticket: "${subject}" (${category})`,
+      action_url: `/admin/maid-support/${result.rows[0].id}`,
+      sendMail: async () => {
         const { rows: admins } = await db.query(
           `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
         );
         for (const admin of admins) {
-          sendEmail({
+          await sendEmail({
             to: admin.email,
             subject: `New maid support ticket — ${process.env.APP_NAME}`,
-            html: `<p>New maid ticket. Subject: <strong>${result.rows[0].subject}</strong>. Category: ${result.rows[0].category}.</p>`,
-          }).catch(console.error);
+            html: `<p>New maid ticket. Subject: <strong>${subject}</strong>. Category: ${category}.</p>`,
+          });
         }
-      } catch (e) {
-        console.error("[maid-support/email]", e);
-      }
-    })();
+      },
+    });
 
     res.status(201).json({
       message: "Support ticket created successfully",
@@ -357,26 +368,29 @@ export async function updateMaidSupportTicket(req, res) {
       return res.status(404).json({ error: "Support ticket not found" });
     }
 
-    (async () => {
-      try {
-        const { rows: maidRows } = await db.query(
-          `SELECT u.name, u.email FROM users u
-           JOIN maid_support_tickets t ON t.user_id = u.id
-           WHERE t.id = $1`,
-          [id],
-        );
-        if (
-          maidRows[0] &&
-          ["in_progress", "resolved", "closed"].includes(status)
-        ) {
-          sendMaidTicketStatusEmail(maidRows[0], result.rows[0], status).catch(
-            console.error,
+    if (["in_progress", "resolved", "closed"].includes(status)) {
+      const statusLabels = {
+        in_progress: "In Progress ⏳",
+        resolved: "Resolved ✅",
+        closed: "Closed 🔒",
+      };
+
+      await notify(db, {
+        userId: result.rows[0].user_id,
+        type: "ticket_status",
+        title: `Ticket ${statusLabels[status]}`,
+        body: `Your maid support ticket "${result.rows[0].subject}" is now ${status.replace("_", " ")}.`,
+        action_url: `/maid/support/tickets/${result.rows[0].id}`,
+        sendMail: async () => {
+          const { rows } = await db.query(
+            `SELECT name, email FROM users WHERE id = $1`,
+            [result.rows[0].user_id],
           );
-        }
-      } catch (e) {
-        console.error("[maid-support/status/email]", e);
-      }
-    })();
+          if (rows[0])
+            return sendMaidTicketStatusEmail(rows[0], result.rows[0], status);
+        },
+      });
+    }
 
     res.json({
       message: "Support ticket updated successfully",
@@ -431,43 +445,55 @@ export async function replyMaidSupportTicket(req, res) {
       [id],
     );
 
-    (async () => {
-      try {
-        const replierRows = await db.query(
-          `SELECT name FROM users WHERE id = $1`,
-          [userId],
-        );
-        const replierName = replierRows.rows[0]?.name || "Support Team";
+    const { rows: replierRowsFinal } = await db.query(
+      `SELECT name FROM users WHERE id = $1`,
+      [userId],
+    );
+    const replierName = replierRowsFinal[0]?.name || "Support Team";
 
-        if (userRole === "admin") {
-          const { rows: maidRows } = await db.query(
+    if (userRole === "admin") {
+      // Admin replied → notify maid (in-app + email)
+      await notify(db, {
+        userId: ticket.user_id,
+        type: "ticket_reply",
+        title: `New reply on your ticket 💬`,
+        body: `${replierName} replied to your ticket "${ticket.subject}".`,
+        action_url: `/maid/support/tickets/${ticket.id}`,
+        sendMail: async () => {
+          const { rows } = await db.query(
             `SELECT name, email FROM users WHERE id = $1`,
             [ticket.user_id],
           );
-          if (maidRows[0]) {
-            sendMaidTicketReplyEmail(
-              maidRows[0],
+          if (rows[0])
+            return sendMaidTicketReplyEmail(
+              rows[0],
               ticket,
               message,
               replierName,
-            ).catch(console.error);
-          }
-        } else {
+            );
+        },
+      });
+    } else {
+      // Maid replied → notify all admins (in-app + email)
+      await notifyAdmins(db, {
+        type: "ticket_reply",
+        title: `Maid replied to ticket 💬`,
+        body: `${replierName} replied to ticket "${ticket.subject}".`,
+        action_url: `/admin/maid-support/${ticket.id}`,
+        sendMail: async () => {
           const { rows: admins } = await db.query(
             `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
           );
           for (const admin of admins) {
-            sendEmail({
+            await sendEmail({
               to: admin.email,
               subject: `Maid replied to support ticket — ${process.env.APP_NAME}`,
-              html: `<p>Maid replied to ticket: <strong>${ticket.subject}</strong>.</p><p>${message}</p>`,
-            }).catch(console.error);
+              html: `<p><strong>${replierName}</strong> replied to ticket: <strong>${ticket.subject}</strong>.</p><p>${message}</p>`,
+            });
           }
-        }
-      } catch (e) {
-        console.error("[maid-support/reply/email]", e);
-      }
-    })();
+        },
+      });
+    }
 
     res.status(201).json({
       message: "Reply added successfully",

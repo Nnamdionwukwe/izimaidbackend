@@ -5,7 +5,8 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
-import { sendSupportChatMessageEmail } from "../utils/mailer.js";
+import { sendEmail, sendSupportChatMessageEmail } from "../utils/mailer.js";
+import { notify, notifyAdmins } from "../utils/notify.js";
 
 // ─── Get or create a support conversation between customer and admin ──
 export async function getOrCreateSupportConversation(req, res) {
@@ -200,29 +201,48 @@ export async function sendSupportMessage(req, res) {
         const preview = trimmedContent.slice(0, 200);
 
         if (isCustomer) {
-          // Notify admin(s)
-          const { rows: admins } = await db.query(
-            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
-          );
-          for (const admin of admins) {
-            sendSupportChatMessageEmail(admin, senderName, preview).catch(
-              console.error,
-            );
-          }
+          // Customer sent → notify all admins (in-app + email)
+          await notifyAdmins(db, {
+            type: "support_message",
+            title: `New support message from ${senderName}`,
+            body: preview.length > 80 ? preview.slice(0, 80) + "…" : preview,
+            data: { conversation_id: conversationId },
+            action_url: `/admin/support/chat`,
+            sendMail: async () => {
+              const { rows: admins } = await db.query(
+                `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+              );
+              for (const admin of admins) {
+                await sendSupportChatMessageEmail(admin, senderName, preview);
+              }
+            },
+          });
         } else {
-          // Notify customer
-          const { rows: custRows } = await db.query(
-            `SELECT name, email FROM users WHERE id = $1`,
-            [conversation.customer_id],
-          );
-          if (custRows[0]) {
-            sendSupportChatMessageEmail(custRows[0], senderName, preview).catch(
-              console.error,
-            );
-          }
+          // Admin sent → notify customer (in-app + email)
+          await notify(db, {
+            userId: conversation.customer_id,
+            type: "support_reply",
+            title: `Support team replied`,
+            body: preview.length > 80 ? preview.slice(0, 80) + "…" : preview,
+            data: { conversation_id: conversationId },
+            action_url: `/support/chat`,
+            sendMail: async () => {
+              const { rows: custRows } = await db.query(
+                `SELECT name, email FROM users WHERE id = $1`,
+                [conversation.customer_id],
+              );
+              if (custRows[0]) {
+                await sendSupportChatMessageEmail(
+                  custRows[0],
+                  senderName,
+                  preview,
+                );
+              }
+            },
+          });
         }
       } catch (e) {
-        console.error("[support-chat/email]", e);
+        console.error("[support-chat/notify]", e);
       }
     })();
 
@@ -313,28 +333,48 @@ export async function sendSupportMediaMessage(req, res) {
       try {
         const senderName = enriched.rows[0].sender_name;
         const preview = `[${mediaType === "video" ? "Video" : "Image"} attachment]`;
+
         if (isCustomer) {
-          const { rows: admins } = await db.query(
-            `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
-          );
-          for (const admin of admins) {
-            sendSupportChatMessageEmail(admin, senderName, preview).catch(
-              console.error,
-            );
-          }
+          await notifyAdmins(db, {
+            type: "support_message",
+            title: `New support message from ${senderName}`,
+            body: preview,
+            data: { conversation_id: conversationId },
+            action_url: `/admin/support/chat`,
+            sendMail: async () => {
+              const { rows: admins } = await db.query(
+                `SELECT name, email FROM users WHERE role = 'admin' AND is_active = true`,
+              );
+              for (const admin of admins) {
+                await sendSupportChatMessageEmail(admin, senderName, preview);
+              }
+            },
+          });
         } else {
-          const { rows: custRows } = await db.query(
-            `SELECT name, email FROM users WHERE id = $1`,
-            [conversation.customer_id],
-          );
-          if (custRows[0]) {
-            sendSupportChatMessageEmail(custRows[0], senderName, preview).catch(
-              console.error,
-            );
-          }
+          await notify(db, {
+            userId: conversation.customer_id,
+            type: "support_reply",
+            title: `Support team replied`,
+            body: preview,
+            data: { conversation_id: conversationId },
+            action_url: `/support/chat`,
+            sendMail: async () => {
+              const { rows: custRows } = await db.query(
+                `SELECT name, email FROM users WHERE id = $1`,
+                [conversation.customer_id],
+              );
+              if (custRows[0]) {
+                await sendSupportChatMessageEmail(
+                  custRows[0],
+                  senderName,
+                  preview,
+                );
+              }
+            },
+          });
         }
       } catch (e) {
-        console.error("[support-chat/email/media]", e);
+        console.error("[support-chat/notify/media]", e);
       }
     })();
 

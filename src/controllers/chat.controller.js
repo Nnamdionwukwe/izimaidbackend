@@ -5,7 +5,8 @@ import {
   validateMediaFile,
 } from "../utils/cloudinary-utils.js";
 
-import { sendBookingChatMessageEmail } from "../utils/mailer.js";
+import { sendEmail, sendBookingChatMessageEmail } from "../utils/mailer.js";
+import { notify } from "../utils/notify.js";
 
 // ─── Get or create a conversation between customer and maid ──────────
 export async function getOrCreateConversation(req, res) {
@@ -211,25 +212,35 @@ export async function sendMessage(req, res) {
         const senderName = enriched.rows[0].sender_name;
         const preview = trimmedContent.slice(0, 200);
         const isFromCustomer = userId === conversation.customer_id;
-
-        // Recipient = the OTHER party
         const recipientId = isFromCustomer
           ? conversation.maid_id
           : conversation.customer_id;
+
         const { rows: recipientRows } = await db.query(
           `SELECT name, email FROM users WHERE id = $1`,
           [recipientId],
         );
+
         if (recipientRows[0]) {
-          sendBookingChatMessageEmail(
-            recipientRows[0],
-            senderName,
-            preview,
-            conversation.booking_id,
-          ).catch(console.error);
+          // ── In-app notification ──
+          await notify(db, {
+            userId: recipientId,
+            type: "new_message",
+            title: `New message from ${senderName}`,
+            body: preview.length > 80 ? preview.slice(0, 80) + "…" : preview,
+            data: { booking_id: conversation.booking_id },
+            action_url: `/bookings/${conversation.booking_id}`,
+            sendMail: () =>
+              sendBookingChatMessageEmail(
+                recipientRows[0],
+                senderName,
+                preview,
+                conversation.booking_id,
+              ),
+          });
         }
       } catch (e) {
-        console.error("[chat/email]", e);
+        console.error("[chat/notify]", e);
       }
     })();
 
@@ -326,20 +337,31 @@ export async function sendMediaMessage(req, res) {
         const recipientId = isFromCustomer
           ? conversation.maid_id
           : conversation.customer_id;
+
         const { rows: recipientRows } = await db.query(
           `SELECT name, email FROM users WHERE id = $1`,
           [recipientId],
         );
+
         if (recipientRows[0]) {
-          sendBookingChatMessageEmail(
-            recipientRows[0],
-            senderName,
-            preview,
-            conversation.booking_id,
-          ).catch(console.error);
+          await notify(db, {
+            userId: recipientId,
+            type: "new_message",
+            title: `New message from ${senderName}`,
+            body: preview,
+            data: { booking_id: conversation.booking_id },
+            action_url: `/bookings/${conversation.booking_id}`,
+            sendMail: () =>
+              sendBookingChatMessageEmail(
+                recipientRows[0],
+                senderName,
+                preview,
+                conversation.booking_id,
+              ),
+          });
         }
       } catch (e) {
-        console.error("[chat/email/media]", e);
+        console.error("[chat/notify/media]", e);
       }
     })();
 
