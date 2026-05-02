@@ -6,10 +6,13 @@ import {
 } from "../utils/cloudinary-utils.js";
 
 import {
+  sendEmail,
   sendCustomerTicketCreatedEmail,
   sendCustomerTicketReplyEmail,
   sendCustomerTicketStatusEmail,
 } from "../utils/mailer.js";
+
+import { notify, notifyAdmins } from "../utils/notify.js";
 
 // Create a new customer support ticket
 export async function createCustomerSupportTicket(req, res) {
