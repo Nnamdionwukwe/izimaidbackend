@@ -525,6 +525,11 @@ export async function updateSettings(req, res) {
         [language, req.user.id],
       );
     }
+    // At the end of updateSettings, before return res.json:
+    try {
+      const { safeDel } = await import("../config/redis.js");
+      await safeDel(`user:${req.user.id}`);
+    } catch {}
     return res.json({ settings: rows[0] });
   } catch (err) {
     console.error("[settings/updateSettings]", err);
