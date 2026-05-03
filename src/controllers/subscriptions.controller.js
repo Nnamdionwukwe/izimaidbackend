@@ -853,7 +853,7 @@ export const resumeSubscription = async (req, res) => {
 // ──────────────────────────────────────────────────────────────────────
 
 export const changePlan = async (req, res) => {
-  const { new_plan_id, promo_code } = req.body;
+  const { new_plan_id, promo_code, gateway = "paystack" } = req.body;
   if (!new_plan_id)
     return res.status(400).json({ error: "new_plan_id is required" });
 
@@ -866,59 +866,52 @@ export const changePlan = async (req, res) => {
       return res.status(409).json({ error: "already on this plan" });
     }
 
-    const currency = currentSub?.currency || "NGN";
+    const currency = gateway === "stripe" ? "USD" : "NGN";
     const basePrice = newPlan.prices[currency] || newPlan.prices["NGN"] || 0;
 
-    const { discount, type: discountType } = await applyPromo(
-      req.db,
-      promo_code,
-      newPlan.name,
-      currency,
-    );
-    const finalPrice = calcFinalPrice(basePrice, discount, discountType);
-
-    // For Stripe — update subscription
-    if (currentSub?.stripe_sub_id) {
-      const stripeSub = await stripe.subscriptions.retrieve(
-        currentSub.stripe_sub_id,
+    // Free plan — switch directly, no payment needed
+    if (basePrice === 0) {
+      await req.db.query(
+        `UPDATE subscriptions SET plan_id = $1, updated_at = now() WHERE id = $2`,
+        [newPlan.id, currentSub?.id],
       );
-      await stripe.subscriptions.update(currentSub.stripe_sub_id, {
-        items: [
-          {
-            id: stripeSub.items.data[0].id,
-            price: newPlan.stripe_price_ids?.monthly,
-          },
-        ],
-        proration_behavior: "create_prorations",
+      await req.db.query(
+        `UPDATE users SET subscription_plan = $1, subscription_badge = $2 WHERE id = $3`,
+        [newPlan.name, newPlan.badge, req.user.id],
+      );
+      return res.json({
+        message: `Switched to ${newPlan.display_name}`,
+        plan: newPlan,
       });
     }
 
-    // Update subscription in DB
-    await req.db.query(
-      `UPDATE subscriptions
-       SET plan_id = $1, amount = $2, promo_code = $3, updated_at = now()
-       WHERE id = $4`,
-      [newPlan.id, finalPrice, promo_code || null, currentSub?.id],
-    );
+    // Paid plan — cancel current and redirect to payment
+    // Cancel existing so subscribePaystack 409 check passes
+    if (currentSub) {
+      await db.query(
+        `UPDATE subscriptions
+   SET status       = 'cancelled',
+       cancelled_at = CURRENT_TIMESTAMP,
+       updated_at   = CURRENT_TIMESTAMP
+   WHERE user_id = $1
+     AND status IN ('active', 'trialing', 'past_due')`,
+        [userId],
+      );
 
-    await req.db.query(
-      `UPDATE users SET subscription_plan = $1, subscription_badge = $2 WHERE id = $3`,
-      [newPlan.name, newPlan.badge, req.user.id],
-    );
+      await req.db.query(
+        `UPDATE users SET subscription_plan = 'free', subscription_badge = null WHERE id = $1`,
+        [req.user.id],
+      );
+    }
 
-    await notify(req.db, {
-      userId: req.user.id,
-      type: "payment_received",
-      title: `Plan changed to ${newPlan.display_name}`,
-      body: `Your subscription has been updated to ${newPlan.display_name}.`,
-      action_url: "/settings/subscription",
-      data: { plan_name: newPlan.name },
-    });
+    // Now delegate to Paystack or Stripe — reuse existing subscribe logic
+    req.body.plan_id = new_plan_id;
+    req.body.currency = currency;
 
-    return res.json({
-      message: `Plan changed to ${newPlan.display_name}`,
-      plan: newPlan,
-    });
+    if (gateway === "stripe") {
+      return subscribeStripe(req, res);
+    }
+    return subscribePaystack(req, res);
   } catch (err) {
     console.error("[subscriptions/changePlan]", err);
     return res.status(500).json({ error: "internal server error" });
