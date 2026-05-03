@@ -635,6 +635,8 @@ export async function updateProfile(req, res) {
       return res.status(404).json({ error: "User not found" });
     }
 
+    await safeDel(`user:${req.user.id}`);
+
     return res.json({ user: rows[0], message: "Profile updated successfully" });
   } catch (err) {
     console.error("[auth/updateProfile]", err);
@@ -750,6 +752,48 @@ export const changePassword = async (req, res) => {
     return res.json({ message: "Password changed successfully" });
   } catch (err) {
     console.error("[auth/changePassword]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const deleteAccount = async (req, res) => {
+  const { password } = req.body;
+
+  try {
+    const { rows } = await req.db.query(
+      `SELECT password_hash, google_id FROM users WHERE id = $1`,
+      [req.user.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "user not found" });
+
+    // Require password for email users
+    if (rows[0].password_hash && !rows[0].google_id) {
+      if (!password)
+        return res
+          .status(400)
+          .json({ error: "password is required to delete your account" });
+      const valid = await verifyPassword(password, rows[0].password_hash);
+      if (!valid) return res.status(401).json({ error: "incorrect password" });
+    }
+
+    // Soft-deactivate
+    await req.db.query(
+      `UPDATE users SET is_active = false, updated_at = now() WHERE id = $1`,
+      [req.user.id],
+    );
+
+    // Cancel any active subscriptions
+    await req.db.query(
+      `UPDATE subscriptions SET status = 'cancelled', cancelled_at = now()
+       WHERE user_id = $1 AND status IN ('active','trialing','paused')`,
+      [req.user.id],
+    );
+
+    await safeDel(`user:${req.user.id}`);
+
+    return res.json({ message: "Account deactivated successfully" });
+  } catch (err) {
+    console.error("[auth/deleteAccount]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
