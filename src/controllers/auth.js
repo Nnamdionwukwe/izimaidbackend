@@ -695,3 +695,61 @@ export const uploadAvatar = async (req, res) => {
     return res.status(500).json({ error: "Failed to upload avatar" });
   }
 };
+
+export const changePassword = async (req, res) => {
+  const { current_password, new_password } = req.body;
+
+  if (!current_password || !new_password) {
+    return res
+      .status(400)
+      .json({ error: "current_password and new_password are required" });
+  }
+  if (new_password.length < 8) {
+    return res
+      .status(400)
+      .json({ error: "password must be at least 8 characters" });
+  }
+
+  try {
+    const { rows } = await req.db.query(
+      `SELECT password_hash, google_id FROM users WHERE id = $1`,
+      [req.user.id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "user not found" });
+    }
+
+    const user = rows[0];
+
+    // Google-only account with no password
+    if (!user.password_hash) {
+      return res.status(400).json({
+        error:
+          "This account uses Google sign-in and has no password set. Use 'Forgot password' to set one.",
+        code: "NO_PASSWORD_SET",
+      });
+    }
+
+    // Verify current password
+    const valid = await verifyPassword(current_password, user.password_hash);
+    if (!valid) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    // Hash and save new password
+    const new_hash = await hashPassword(new_password);
+    await req.db.query(
+      `UPDATE users SET password_hash = $1, updated_at = now() WHERE id = $2`,
+      [new_hash, req.user.id],
+    );
+
+    // Bust cache
+    await safeDel(`user:${req.user.id}`);
+
+    return res.json({ message: "Password changed successfully" });
+  } catch (err) {
+    console.error("[auth/changePassword]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};

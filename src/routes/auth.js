@@ -13,6 +13,7 @@ import {
   forgotPassword,
   resetPassword,
   updateProfile,
+  changePassword,
 } from "../controllers/auth.js";
 
 const router = Router();
@@ -46,7 +47,9 @@ router.post("/login", login);
 router.patch("/update-profile", requireAuth, updateProfile);
 router.get("/verify-email/:token", verifyEmail);
 router.post("/resend-verification", resendVerification);
+router.post("/change-password", requireAuth, changePassword);
 router.post("/forgot-password", forgotPassword);
+
 router.post("/reset-password/:token", resetPassword);
 
 export default router;
