@@ -885,32 +885,26 @@ export const changePlan = async (req, res) => {
       });
     }
 
-    // Paid plan — cancel current and redirect to payment
-    // Cancel existing so subscribePaystack 409 check passes
+    // Paid plan — cancel current sub so subscribePaystack 409 check passes
     if (currentSub) {
-      await db.query(
+      await req.db.query(
+        // ← req.db not db
         `UPDATE subscriptions
-   SET status       = 'cancelled',
-       cancelled_at = CURRENT_TIMESTAMP,
-       updated_at   = CURRENT_TIMESTAMP
-   WHERE user_id = $1
-     AND status IN ('active', 'trialing', 'past_due')`,
-        [userId],
+         SET status = 'cancelled', cancelled_at = now(), updated_at = now()
+         WHERE user_id = $1 AND status IN ('active','trialing','past_due')`,
+        [req.user.id], // ← req.user.id not userId
       );
-
       await req.db.query(
         `UPDATE users SET subscription_plan = 'free', subscription_badge = null WHERE id = $1`,
         [req.user.id],
       );
     }
 
-    // Now delegate to Paystack or Stripe — reuse existing subscribe logic
+    // Delegate to existing subscribe handler — it returns the Paystack URL
     req.body.plan_id = new_plan_id;
     req.body.currency = currency;
 
-    if (gateway === "stripe") {
-      return subscribeStripe(req, res);
-    }
+    if (gateway === "stripe") return subscribeStripe(req, res);
     return subscribePaystack(req, res);
   } catch (err) {
     console.error("[subscriptions/changePlan]", err);
