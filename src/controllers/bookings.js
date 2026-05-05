@@ -15,11 +15,14 @@ async function fetchBookingWithUsers(db, bookingId) {
             c.avatar as customer_avatar, c.phone as customer_phone,
             m.name as maid_name, m.email as maid_email,
             m.avatar as maid_avatar,
+            mp.currency AS maid_currency,           -- ← ADD
             p.status as payment_status, p.paystack_reference,
-            p.stripe_payment_id, p.amount as payment_amount
+            p.stripe_payment_id, p.amount as payment_amount,
+            p.currency AS payment_currency          -- ← ADD
      FROM bookings b
      JOIN users c ON c.id = b.customer_id
      JOIN users m ON m.id = b.maid_id
+     LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id   -- ← ADD
      LEFT JOIN payments p ON p.booking_id = b.id
      WHERE b.id = $1`,
     [bookingId],
@@ -464,16 +467,17 @@ export const checkOut = async (req, res) => {
   const { lat, lng } = req.body; // optional
 
   try {
+    // In checkOut controller, change the UPDATE to:
     const { rows } = await req.db.query(
       `UPDATE bookings
-       SET checkout_at = now(),
-           live_tracking_on = false,
-           updated_at = now()
-       WHERE id = $1
-         AND maid_id = $2
-         AND status = 'in_progress'
-       RETURNING *`,
-      [req.params.id, req.user.id],
+   SET checkout_at = now(),
+       checkout_lat = $3,        -- ← ADD
+       checkout_lng = $4,        -- ← ADD
+       live_tracking_on = false,
+       updated_at = now()
+   WHERE id = $1 AND maid_id = $2 AND status = 'in_progress'
+   RETURNING *`,
+      [req.params.id, req.user.id, lat || null, lng || null],
     );
 
     if (!rows.length) {
