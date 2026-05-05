@@ -861,3 +861,72 @@ export async function getOrCreateInquiry(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+
+export async function getMaidInquiry(req, res) {
+  try {
+    const maidId = req.user.id;
+    const { customerId } = req.params;
+
+    // Verify customer exists
+    const { rows: customerRows } = await db.query(
+      `SELECT id, name, avatar FROM users WHERE id = $1 AND role = 'customer'`,
+      [customerId],
+    );
+    if (!customerRows.length) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    // Maids can only READ existing inquiry conversations — customer must initiate
+    const { rows } = await db.query(
+      `SELECT * FROM conversations
+       WHERE customer_id = $1 AND maid_id = $2 AND type = 'inquiry'
+       LIMIT 1`,
+      [customerId, maidId],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "No inquiry conversation found" });
+    }
+
+    const conversation = rows[0];
+
+    // Fetch messages
+    const { rows: messages } = await db.query(
+      `SELECT m.*,
+              u.name   AS sender_name,
+              u.role   AS sender_role,
+              u.avatar AS sender_avatar,
+              CASE WHEN m.deleted_at IS NOT NULL THEN 'deleted' ELSE m.content END AS content,
+              CASE WHEN m.deleted_at IS NOT NULL THEN NULL    ELSE m.media_url END AS media_url
+       FROM messages m
+       JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = $1
+       ORDER BY m.created_at ASC`,
+      [conversation.id],
+    );
+
+    // Mark incoming messages as read for the maid
+    await db.query(
+      `UPDATE messages
+       SET is_read = true
+       WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
+      [conversation.id, maidId],
+    );
+
+    await db.query(`UPDATE conversations SET unread_maid = 0 WHERE id = $1`, [
+      conversation.id,
+    ]);
+
+    return res.json({
+      conversation: {
+        ...conversation,
+        customer_name: customerRows[0].name,
+        customer_avatar: customerRows[0].avatar,
+      },
+      messages,
+    });
+  } catch (err) {
+    console.error("[chat/getMaidInquiry]", err);
+    return res.status(500).json({ error: err.message });
+  }
+}

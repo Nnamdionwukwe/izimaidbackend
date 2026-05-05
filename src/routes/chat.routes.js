@@ -172,4 +172,12 @@ router.get(
   getOrCreateInquiry,
 );
 
+// Add this below the existing customer inquiry route
+router.get(
+  "/inquiry/customer/:customerId",
+  requireAuth,
+  requireRole("maid"),
+  getMaidInquiry,
+);
+
 export default router;
