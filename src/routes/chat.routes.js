@@ -13,6 +13,7 @@ import {
   adminGetAllConversations,
   adminGetConversation,
   getOrCreateInquiry,
+  getMaidInquiry,
 } from "../controllers/chat.controller.js";
 
 import db from "../config/database.js";
