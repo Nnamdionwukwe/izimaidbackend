@@ -1,87 +1,29 @@
 import { google } from "googleapis";
 import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 const APP_NAME = process.env.APP_NAME || "Deusizi Sparkle";
 const FRONTEND =
   process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
 
-// ── Send via Gmail REST API (no SMTP — works on Railway) ──────────────
-async function sendViaGmailAPI({ to, subject, html }) {
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GMAIL_CLIENT_ID,
-    process.env.GMAIL_CLIENT_SECRET,
-    "https://developers.google.com/oauthplayground",
-  );
-  oauth2Client.setCredentials({
-    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
-  });
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
-  const from = `${APP_NAME} <${process.env.SMTP_USER}>`;
-  const messageParts = [
-    `From: ${from}`,
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    "MIME-Version: 1.0",
-    "Content-Type: text/html; charset=utf-8",
-    "",
-    html,
-  ];
-  const message = messageParts.join("\n");
-  const encoded = Buffer.from(message)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-  const res = await gmail.users.messages.send({
-    userId: "me",
-    requestBody: { raw: encoded },
-  });
-  return res.data.id;
-}
-
-// ── Send via SMTP (local dev fallback) ────────────────────────────────
-async function sendViaSMTP({ to, subject, html }) {
-  const transport = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    family: 4,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-    tls: { rejectUnauthorized: false },
-  });
-  const info = await transport.sendMail({
-    from: `${APP_NAME} <${process.env.SMTP_USER}>`,
-    to,
-    subject,
-    html,
-  });
-  return info.messageId;
-}
-
-// ── Base send — auto picks Gmail API or SMTP ──────────────────────────
 export async function sendEmail({ to, subject, html }) {
-  console.log(`[EMAIL] ► Sending to ${to} | subject: "${subject}"`); // ← add
   try {
-    const useGmailAPI = !!(
-      process.env.GMAIL_CLIENT_ID &&
-      process.env.GMAIL_CLIENT_SECRET &&
-      process.env.GMAIL_REFRESH_TOKEN
-    );
+    const { data, error } = await resend.emails.send({
+      from: `${process.env.APP_NAME} <onboarding@resend.dev>`, // use this until you verify a domain
+      to,
+      subject,
+      html,
+    });
 
-    const id = useGmailAPI
-      ? await sendViaGmailAPI({ to, subject, html })
-      : await sendViaSMTP({ to, subject, html });
+    if (error) {
+      console.error(`✗ [EMAIL] Failed → ${to}:`, error);
+      return { success: false, error: error.message };
+    }
 
-    console.log(
-      `✓ [EMAIL] ${subject} → ${to} (${useGmailAPI ? "Gmail API" : "SMTP"})`,
-    );
-    return { success: true, id };
+    console.log(`✓ [EMAIL] ${subject} → ${to}`);
+    return { success: true, id: data.id };
   } catch (err) {
     console.error(`✗ [EMAIL] Failed → ${to}:`, err.message);
     return { success: false, error: err.message };
