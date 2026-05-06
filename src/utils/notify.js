@@ -2,8 +2,6 @@
 // Central notification dispatcher — handles in-app + email + push (future)
 // Used by ALL controllers — never call sendEmail directly from controllers,
 
-import { sendEmail } from "./mailer";
-
 // always go through notify() so preferences are respected
 
 // Notification type → preference column mapping
