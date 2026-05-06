@@ -5,6 +5,8 @@ import {
   transporter,
 } from "../utils/mailer.js";
 import crypto from "crypto";
+import { generateAgoraToken } from "../utils/agora.js";
+import { sendPushToUsers } from "../utils/push.js";
 import { notify, notifyMany, notifyAdmins } from "../utils/notify.js";
 
 // ─── Helper: get full booking with users ─────────────────────────────
@@ -814,102 +816,193 @@ export const getSOSAlerts = async (req, res) => {
 };
 
 // ─── Initiate video call ──────────────────────────────────────────────
-// Uses a simple token — frontend uses Daily.co / Agora with this room name
+
+// ─── Initiate video call (Agora) ──────────────────────────────────────
 export const initiateVideoCall = async (req, res) => {
   try {
     const { rows: bookingRows } = await req.db.query(
-      `SELECT * FROM bookings
-       WHERE id = $1
-         AND (customer_id = $2 OR maid_id = $2)
-         AND status IN ('confirmed', 'in_progress')`,
+      `SELECT b.*,
+              c.name AS customer_name,
+              m.name AS maid_name
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE b.id = $1
+         AND (b.customer_id = $2 OR b.maid_id = $2)
+         AND b.status IN ('confirmed', 'in_progress')`,
       [req.params.id, req.user.id],
     );
 
     if (!bookingRows.length) {
-      return res.status(404).json({ error: "confirmed booking not found" });
+      return res.status(404).json({ error: "Active booking not found" });
     }
 
     const booking = bookingRows[0];
-    const roomName =
-      booking.video_call_room ||
-      `ds-${booking.id.slice(0, 8)}-${crypto.randomBytes(4).toString("hex")}`;
-    const callUrl = `https://meet.jit.si/${roomName}`;
 
+    // ── Generate unique channel name ───────────────────────────────
+    const channelName =
+      booking.video_call_channel ||
+      `ds-${booking.id.slice(0, 8)}-${crypto.randomBytes(3).toString("hex")}`;
+
+    // ── Generate Agora token ───────────────────────────────────────
+    const { token: agoraToken, appId } = generateAgoraToken(channelName);
+
+    // ── Persist to bookings ────────────────────────────────────────
     await req.db.query(
       `UPDATE bookings
-       SET video_call_room = $1, video_call_status = 'ringing', video_call_started_at = now()
-       WHERE id = $2`,
-      [roomName, booking.id],
+       SET video_call_channel   = $1,
+           video_call_token     = $2,
+           video_call_status    = 'ringing',
+           video_call_started_at = now()
+       WHERE id = $3`,
+      [channelName, agoraToken, booking.id],
     );
 
-    // Notify the OTHER party (customer if maid calls, maid if customer calls)
-    const recipientId =
-      req.user.id === booking.maid_id ? booking.customer_id : booking.maid_id;
+    // ── Determine caller / recipient names ─────────────────────────
+    const isCallerCustomer = req.user.id === booking.customer_id;
+    const callerName = isCallerCustomer
+      ? booking.customer_name
+      : booking.maid_name;
+    const recipientId = isCallerCustomer
+      ? booking.maid_id
+      : booking.customer_id;
 
-    await notify(req.db, {
-      userId: recipientId,
-      type: "video_call_incoming",
+    // ── Send Expo push notification to the OTHER party ─────────────
+    await sendPushToUsers(req.db, [recipientId], {
       title: "📹 Incoming Video Call",
-      body: "You have an incoming video call. Tap to answer.",
-      data: { booking_id: booking.id, call_url: callUrl },
-      action_url: `/bookings/${booking.id}`,
+      body: `${callerName} is calling you`,
+      sound: "default",
+      priority: "high",
+      channelId: "video-call",
+      data: {
+        type: "video_call_incoming",
+        booking_id: booking.id,
+        channel: channelName,
+        token: agoraToken,
+        app_id: appId,
+        caller_name: callerName,
+      },
     });
 
-    return res.json({ call_url: callUrl, room: roomName, status: "ringing" });
+    return res.json({
+      channel: channelName,
+      token: agoraToken,
+      app_id: appId,
+      status: "ringing",
+    });
   } catch (err) {
     console.error("[bookings/initiateVideoCall]", err);
-    return res.status(500).json({ error: "internal server error" });
+    return res.status(500).json({ error: err.message });
   }
 };
 
-// ─── Get active call status for a booking ─────────────────────────────
+// ─── Get video call status + Agora credentials ────────────────────────
 export const getVideoCallStatus = async (req, res) => {
   try {
     const { rows } = await req.db.query(
-      `SELECT video_call_room, video_call_status, video_call_started_at
+      `SELECT video_call_channel, video_call_token, video_call_status,
+              video_call_started_at
        FROM bookings
        WHERE id = $1 AND (customer_id = $2 OR maid_id = $2)`,
       [req.params.id, req.user.id],
     );
-    if (!rows.length) return res.status(404).json({ error: "not found" });
+
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
 
     const b = rows[0];
-    const callUrl = b.video_call_room
-      ? `https://meet.jit.si/${b.video_call_room}`
-      : null;
+
+    // Re-generate a fresh token if channel exists
+    let freshToken = null;
+    let appId = null;
+    if (b.video_call_channel) {
+      const agora = generateAgoraToken(b.video_call_channel);
+      freshToken = agora.token;
+      appId = agora.appId;
+    }
 
     return res.json({
       status: b.video_call_status || "idle",
-      call_url: callUrl,
+      channel: b.video_call_channel,
+      token: freshToken,
+      app_id: appId,
       started_at: b.video_call_started_at,
     });
   } catch (err) {
-    return res.status(500).json({ error: "internal server error" });
+    console.error("[bookings/getVideoCallStatus]", err);
+    return res.status(500).json({ error: err.message });
   }
 };
 
-// ─── End / decline a video call ───────────────────────────────────────
+// ─── End / decline video call ─────────────────────────────────────────
 export const endVideoCall = async (req, res) => {
   try {
-    await req.db.query(
-      `UPDATE bookings
-       SET video_call_status = 'ended', video_call_room = NULL
-       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2)`,
+    const { rows: bookingRows } = await req.db.query(
+      `SELECT customer_id, maid_id, video_call_channel,
+              c.name AS customer_name, m.name AS maid_name
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE b.id = $1 AND (b.customer_id = $2 OR b.maid_id = $2)`,
       [req.params.id, req.user.id],
     );
+
+    if (!bookingRows.length)
+      return res.status(404).json({ error: "Not found" });
+
+    const booking = bookingRows[0];
+
+    await req.db.query(
+      `UPDATE bookings
+       SET video_call_status  = 'ended',
+           video_call_channel = NULL,
+           video_call_token   = NULL
+       WHERE id = $1`,
+      [req.params.id],
+    );
+
+    // Notify the other party the call ended
+    const recipientId =
+      req.user.id === booking.customer_id
+        ? booking.maid_id
+        : booking.customer_id;
+    const callerName =
+      req.user.id === booking.customer_id
+        ? booking.customer_name
+        : booking.maid_name;
+
+    await sendPushToUsers(req.db, [recipientId], {
+      title: "📵 Call Ended",
+      body: `${callerName} ended the call`,
+      priority: "normal",
+      channelId: "video-call",
+      data: {
+        type: "video_call_ended",
+        booking_id: req.params.id,
+      },
+    });
+
     return res.json({ success: true });
   } catch (err) {
-    return res.status(500).json({ error: "internal server error" });
+    console.error("[bookings/endVideoCall]", err);
+    return res.status(500).json({ error: err.message });
   }
 };
 
-// ─── Check for any incoming call across all user's bookings ───────────
+// ─── Check for any incoming call across user's active bookings ────────
+// Polled as a fallback when app is foregrounded (push handles background)
 export const getActiveCallForUser = async (req, res) => {
   try {
     const { rows } = await req.db.query(
-      `SELECT b.id AS booking_id, b.video_call_room, b.video_call_started_at,
-              c.name AS customer_name, m.name AS maid_name,
-              c.avatar AS customer_avatar, m.avatar AS maid_avatar
+      `SELECT b.id AS booking_id,
+              b.video_call_channel,
+              b.video_call_token,
+              b.video_call_started_at,
+              b.customer_id,
+              b.maid_id,
+              c.name   AS customer_name,
+              c.avatar AS customer_avatar,
+              m.name   AS maid_name,
+              m.avatar AS maid_avatar
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
        JOIN users m ON m.id = b.maid_id
@@ -924,21 +1017,49 @@ export const getActiveCallForUser = async (req, res) => {
     if (!rows.length) return res.json({ call: null });
 
     const row = rows[0];
+
+    // Generate fresh Agora token for the recipient
+    const { token: freshToken, appId } = generateAgoraToken(
+      row.video_call_channel,
+    );
+
+    const isCustomer = req.user.id === row.customer_id;
+
     return res.json({
       call: {
         booking_id: row.booking_id,
-        call_url: `https://meet.jit.si/${row.video_call_room}`,
-        caller_name:
-          req.user.id === row.customer_id ? row.maid_name : row.customer_name,
-        caller_avatar:
-          req.user.id === row.customer_id
-            ? row.maid_avatar
-            : row.customer_avatar,
+        channel: row.video_call_channel,
+        token: freshToken,
+        app_id: appId,
+        caller_name: isCustomer ? row.maid_name : row.customer_name,
+        caller_avatar: isCustomer ? row.maid_avatar : row.customer_avatar,
         started_at: row.video_call_started_at,
       },
     });
   } catch (err) {
-    return res.status(500).json({ error: "internal server error" });
+    console.error("[bookings/getActiveCallForUser]", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// ─── Save Expo push token for a user ──────────────────────────────────
+// POST /api/users/push-token   { token, platform }
+export const savePushToken = async (req, res) => {
+  try {
+    const { token, platform } = req.body;
+    if (!token) return res.status(400).json({ error: "token is required" });
+
+    await req.db.query(
+      `INSERT INTO push_tokens (user_id, token, platform, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, token) DO UPDATE SET updated_at = now()`,
+      [req.user.id, token, platform || null],
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[users/savePushToken]", err);
+    return res.status(500).json({ error: err.message });
   }
 };
 

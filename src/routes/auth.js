@@ -16,6 +16,7 @@ import {
   changePassword,
   deleteAccount,
 } from "../controllers/auth.js";
+import { savePushToken } from "../controllers/bookings.js";
 
 const router = Router();
 
@@ -46,6 +47,7 @@ router.post("/logout", requireAuth, logout);
 router.post("/register", register);
 router.post("/login", login);
 router.patch("/update-profile", requireAuth, updateProfile);
+router.post("/push-token", requireAuth, savePushToken);
 router.get("/verify-email/:token", verifyEmail);
 router.post("/resend-verification", resendVerification);
 router.post("/change-password", requireAuth, changePassword);

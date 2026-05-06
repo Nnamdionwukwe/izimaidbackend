@@ -20,6 +20,7 @@ import {
   getVideoCallStatus,
   endVideoCall,
   getActiveCallForUser,
+  savePushToken,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -55,9 +56,9 @@ router.post("/:id/checkout", requireAuth, requireRole("maid"), checkOut);
 router.post("/:id/location", requireAuth, requireRole("maid"), updateLocation);
 router.get("/:id/location", requireAuth, getJobLocation);
 router.post("/:id/sos", requireAuth, triggerSOS);
-router.post("/:id/video-call", requireAuth, initiateVideoCall);
-// add these three lines alongside the existing routes:
+// ─── Video call ────────────────────────────────────────────────────────
 router.get("/active-call", requireAuth, getActiveCallForUser);
+router.post("/:id/video-call", requireAuth, initiateVideoCall);
 router.get("/:id/video-call", requireAuth, getVideoCallStatus);
 router.delete("/:id/video-call", requireAuth, endVideoCall);
 
