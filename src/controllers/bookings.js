@@ -477,15 +477,6 @@ export const checkIn = async (req, res) => {
       } catch {}
     }
 
-    await notify(req.db, {
-      userId: rows[0].customer_id,
-      type: "booking_checkin",
-      title: "🟢 Maid has arrived",
-      body: "Your maid checked in and has started the job.",
-      data: { booking_id: req.params.id },
-      action_url: `/bookings/${req.params.id}`,
-    });
-
     return res.json({
       message: "Checked in successfully",
       booking: rows[0],
@@ -552,16 +543,6 @@ export const checkOut = async (req, res) => {
               rows[0],
             )
         : undefined,
-    });
-
-    // ✅ Notify only on success — inside the success block
-    await notify(req.db, {
-      userId: rows[0].customer_id,
-      type: "booking_checkout",
-      title: "🏁 Maid checked out",
-      body: "Your maid has finished. Please mark the job complete and leave a review.",
-      data: { booking_id: req.params.id },
-      action_url: `/bookings/${req.params.id}`,
     });
 
     if (lat && lng) {
@@ -1208,6 +1189,7 @@ export const submitReview = async (req, res) => {
       return res.status(404).json({ error: "completed booking not found" });
 
     const booking = bookingRows[0];
+
     const { rows } = await req.db.query(
       `INSERT INTO reviews (booking_id, customer_id, maid_id, rating, comment)
        VALUES ($1, $2, $3, $4, $5)
@@ -1215,13 +1197,25 @@ export const submitReview = async (req, res) => {
       [booking.id, req.user.id, booking.maid_id, rating, comment || null],
     );
 
-    // Fetch maid info for email
+    // ← Check FIRST before doing anything else
+    if (!rows.length)
+      return res.status(409).json({ error: "review already submitted" });
+
+    await req.db.query(
+      `UPDATE maid_profiles SET
+         rating = (SELECT AVG(rating) FROM reviews WHERE maid_id = $1),
+         total_reviews = (SELECT COUNT(*) FROM reviews WHERE maid_id = $1)
+       WHERE user_id = $1`,
+      [booking.maid_id],
+    );
+
     const { rows: maidRows } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [booking.maid_id],
     );
     const maid = maidRows[0];
 
+    // ← Notify ONCE only
     await notify(req.db, {
       userId: booking.maid_id,
       type: "review_received",
@@ -1237,26 +1231,6 @@ export const submitReview = async (req, res) => {
               req.user.name || "A customer",
             )
         : undefined,
-    });
-
-    if (!rows.length)
-      return res.status(409).json({ error: "review already submitted" });
-
-    await req.db.query(
-      `UPDATE maid_profiles SET
-         rating = (SELECT AVG(rating) FROM reviews WHERE maid_id = $1),
-         total_reviews = (SELECT COUNT(*) FROM reviews WHERE maid_id = $1)
-       WHERE user_id = $1`,
-      [booking.maid_id],
-    );
-
-    await notify(req.db, {
-      userId: booking.maid_id,
-      type: "review_received",
-      title: "⭐ New Review",
-      body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
-      data: { booking_id: req.params.id, rating },
-      action_url: `/bookings/${req.params.id}`,
     });
 
     return res.status(201).json({ review: rows[0] });

@@ -118,18 +118,16 @@ export async function notify(
     action_url = null,
     image_url = null,
     expires_at = null,
-    sendMail, // optional async fn — () => sendXxxEmail(...)
-    sendPush, // optional async fn — for future push notifications
+    sendMail,
+    sendPush,
   },
 ) {
   try {
     const prefs = await getPrefs(db, userId);
 
-    // ── In-app notification ───────────────────────────────────────
     if (prefAllowed(prefs, type, "inapp")) {
       await db.query(
-        `INSERT INTO notifications
-           (user_id, type, title, body, data, priority, action_url, image_url, expires_at, channel)
+        `INSERT INTO notifications (user_id, type, title, body, data, priority, action_url, image_url, expires_at, channel)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'in_app')`,
         [
           userId,
@@ -145,21 +143,25 @@ export async function notify(
       );
     }
 
-    // ── Email notification ────────────────────────────────────────
+    // ← This stays INSIDE notify, with the improved error logging:
     if (sendMail && prefAllowed(prefs, type, "email")) {
-      sendMail().catch((err) =>
-        console.error(`[notify] Email failed for ${type}:`, err.message),
-      );
+      Promise.resolve()
+        .then(() => sendMail())
+        .catch((err) => {
+          console.error(
+            `[notify] ✗ Email FAILED type="${type}" userId="${userId}":`,
+            err.message,
+          );
+          console.error(err.stack);
+        });
     }
 
-    // ── Push notification (future — placeholder) ──────────────────
     if (sendPush && prefAllowed(prefs, type, "push")) {
       sendPush().catch((err) =>
         console.error(`[notify] Push failed for ${type}:`, err.message),
       );
     }
   } catch (err) {
-    // Never crash the request — notifications are non-critical
     console.error(
       `[notify] Failed for user ${userId} type ${type}:`,
       err.message,
