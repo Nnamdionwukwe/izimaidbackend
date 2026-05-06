@@ -830,30 +830,114 @@ export const initiateVideoCall = async (req, res) => {
     }
 
     const booking = bookingRows[0];
-
-    // Generate room name if not exists
     const roomName =
       booking.video_call_room ||
       `ds-${booking.id.slice(0, 8)}-${crypto.randomBytes(4).toString("hex")}`;
-    const token = crypto.randomBytes(16).toString("hex");
+    const callUrl = `https://meet.jit.si/${roomName}`;
 
     await req.db.query(
       `UPDATE bookings
-       SET video_call_room = $1, video_call_token = $2, video_call_status = 'active'
-       WHERE id = $3`,
-      [roomName, token, booking.id],
+       SET video_call_room = $1, video_call_status = 'ringing', video_call_started_at = now()
+       WHERE id = $2`,
+      [roomName, booking.id],
     );
 
-    return res.json({
-      room: roomName,
-      token,
-      // Frontend uses: https://your-app.daily.co/{room}
-      // or Agora channel = roomName
-      provider: "daily",
-      expires_in: 3600, // 1 hour
+    // Notify the OTHER party (customer if maid calls, maid if customer calls)
+    const recipientId =
+      req.user.id === booking.maid_id ? booking.customer_id : booking.maid_id;
+
+    await notify(req.db, {
+      userId: recipientId,
+      type: "video_call_incoming",
+      title: "📹 Incoming Video Call",
+      body: "You have an incoming video call. Tap to answer.",
+      data: { booking_id: booking.id, call_url: callUrl },
+      action_url: `/bookings/${booking.id}`,
     });
+
+    return res.json({ call_url: callUrl, room: roomName, status: "ringing" });
   } catch (err) {
     console.error("[bookings/initiateVideoCall]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ─── Get active call status for a booking ─────────────────────────────
+export const getVideoCallStatus = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT video_call_room, video_call_status, video_call_started_at
+       FROM bookings
+       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2)`,
+      [req.params.id, req.user.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "not found" });
+
+    const b = rows[0];
+    const callUrl = b.video_call_room
+      ? `https://meet.jit.si/${b.video_call_room}`
+      : null;
+
+    return res.json({
+      status: b.video_call_status || "idle",
+      call_url: callUrl,
+      started_at: b.video_call_started_at,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ─── End / decline a video call ───────────────────────────────────────
+export const endVideoCall = async (req, res) => {
+  try {
+    await req.db.query(
+      `UPDATE bookings
+       SET video_call_status = 'ended', video_call_room = NULL
+       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2)`,
+      [req.params.id, req.user.id],
+    );
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ─── Check for any incoming call across all user's bookings ───────────
+export const getActiveCallForUser = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT b.id AS booking_id, b.video_call_room, b.video_call_started_at,
+              c.name AS customer_name, m.name AS maid_name,
+              c.avatar AS customer_avatar, m.avatar AS maid_avatar
+       FROM bookings b
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE (b.customer_id = $1 OR b.maid_id = $1)
+         AND b.video_call_status = 'ringing'
+         AND b.video_call_started_at > now() - interval '90 seconds'
+       ORDER BY b.video_call_started_at DESC
+       LIMIT 1`,
+      [req.user.id],
+    );
+
+    if (!rows.length) return res.json({ call: null });
+
+    const row = rows[0];
+    return res.json({
+      call: {
+        booking_id: row.booking_id,
+        call_url: `https://meet.jit.si/${row.video_call_room}`,
+        caller_name:
+          req.user.id === row.customer_id ? row.maid_name : row.customer_name,
+        caller_avatar:
+          req.user.id === row.customer_id
+            ? row.maid_avatar
+            : row.customer_avatar,
+        started_at: row.video_call_started_at,
+      },
+    });
+  } catch (err) {
     return res.status(500).json({ error: "internal server error" });
   }
 };

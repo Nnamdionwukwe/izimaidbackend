@@ -17,6 +17,9 @@ import {
   setEmergencyContact,
   getEmergencyContacts,
   deleteEmergencyContact,
+  getVideoCallStatus,
+  endVideoCall,
+  getActiveCallForUser,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -53,5 +56,9 @@ router.post("/:id/location", requireAuth, requireRole("maid"), updateLocation);
 router.get("/:id/location", requireAuth, getJobLocation);
 router.post("/:id/sos", requireAuth, triggerSOS);
 router.post("/:id/video-call", requireAuth, initiateVideoCall);
+// add these three lines alongside the existing routes:
+router.get("/active-call", requireAuth, getActiveCallForUser);
+router.get("/:id/video-call", requireAuth, getVideoCallStatus);
+router.delete("/:id/video-call", requireAuth, endVideoCall);
 
 export default router;
