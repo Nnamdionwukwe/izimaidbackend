@@ -590,3 +590,28 @@ export async function getMaidSupportStats(req, res) {
     res.status(500).json({ error: "Failed to fetch support statistics" });
   }
 }
+
+export async function getMaidSupportUnreadCount(req, res) {
+  try {
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    let result;
+    if (userRole === "admin") {
+      result = await db.query(
+        `SELECT COUNT(*) AS unread FROM maid_support_tickets WHERE status = 'open'`,
+      );
+    } else {
+      result = await db.query(
+        `SELECT COUNT(*) AS unread FROM maid_support_tickets
+         WHERE user_id = $1 AND status IN ('open', 'in_progress')`,
+        [userId],
+      );
+    }
+
+    res.json({ unread: parseInt(result.rows[0].unread, 10) });
+  } catch (err) {
+    console.error("Error fetching maid support unread count:", err);
+    res.status(500).json({ error: "Failed to fetch unread count" });
+  }
+}

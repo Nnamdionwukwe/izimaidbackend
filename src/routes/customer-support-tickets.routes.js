@@ -11,6 +11,7 @@ import {
   getCustomerSupportStats,
   uploadCustomerTicketMedia,
   deleteCustomerTicketMedia,
+  getCustomerSupportUnreadCount,
 } from "../controllers/customer-support-tickets.controller.js";
 
 const router = express.Router();
@@ -61,6 +62,8 @@ router.get(
   requireRole("admin"),
   getCustomerSupportStats,
 );
+
+router.get("/unread-count", requireAuth, getCustomerSupportUnreadCount); // ← ADD
 
 // Get single customer support ticket with replies and attachments
 router.get("/:id", requireAuth, getCustomerSupportTicket);

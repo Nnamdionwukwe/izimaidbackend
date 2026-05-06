@@ -11,6 +11,7 @@ import {
   getMaidSupportStats,
   uploadMaidTicketMedia,
   deleteMaidTicketMedia,
+  getMaidSupportUnreadCount,
 } from "../controllers/maid-support-tickets.controller.js";
 
 const router = express.Router();
@@ -50,43 +51,31 @@ const upload = multer({
 
 // Create a new maid support ticket (authenticated maids)
 router.post("/", requireAuth, requireRole("maid"), createMaidSupportTicket);
-
-// Get maid support tickets (maids see own, admins see all)
 router.get("/", requireAuth, getMaidSupportTickets);
 
-// Get maid support statistics (admin only)
+// ── Specific routes BEFORE /:id ──────────────────────────────────────
 router.get("/stats", requireAuth, requireRole("admin"), getMaidSupportStats);
+router.get("/unread-count", requireAuth, getMaidSupportUnreadCount); // ← ADD HERE
 
-// Get single maid support ticket with replies and attachments
+// ── Wildcard /:id routes AFTER ───────────────────────────────────────
 router.get("/:id", requireAuth, getMaidSupportTicket);
-
-// Update maid support ticket status (admin only)
 router.patch(
   "/:id",
   requireAuth,
   requireRole("admin"),
   updateMaidSupportTicket,
 );
-
-// Add reply to maid support ticket
 router.post("/:id/reply", requireAuth, replyMaidSupportTicket);
-
-// Upload media to maid support ticket
 router.post(
   "/:id/media",
   requireAuth,
   upload.single("media"),
   uploadMaidTicketMedia,
 );
-
-// Delete media from maid support ticket
 router.delete(
   "/:ticketId/media/:attachmentId",
   requireAuth,
   deleteMaidTicketMedia,
 );
-
-// Delete maid support ticket
 router.delete("/:id", requireAuth, deleteMaidSupportTicket);
-
 export default router;
