@@ -5,13 +5,14 @@ import { Resend } from "resend";
 const APP_NAME = process.env.APP_NAME || "Deusizi Sparkle";
 const FRONTEND =
   process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
-
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// ── Base send — Resend only ───────────────────────────────────────────
 export async function sendEmail({ to, subject, html }) {
+  console.log(`[EMAIL] ► Sending to ${to} | subject: "${subject}"`);
   try {
     const { data, error } = await resend.emails.send({
-      from: `${process.env.APP_NAME} <onboarding@resend.dev>`, // use this until you verify a domain
+      from: `${APP_NAME} <no-reply@deusizisparkle.com>`,
       to,
       subject,
       html,
@@ -30,13 +31,13 @@ export async function sendEmail({ to, subject, html }) {
   }
 }
 
-// ── transporter shim — used by bookings.js triggerSOS ─────────────────
+// ── transporter shim — used by triggerSOS ────────────────────────────
 export const transporter = {
-  sendMail: async ({ to, subject, html }) => {
-    return sendEmail({ to, subject, html });
-  },
+  sendMail: async ({ to, subject, html }) => sendEmail({ to, subject, html }),
   verify: async () => true,
 };
+
+console.log("✓ Resend email ready");
 
 // Startup log
 if (process.env.GMAIL_CLIENT_ID) {

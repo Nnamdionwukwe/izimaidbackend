@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-// import { sendEmail } from "./src/utils/mailer.js";
+import { sendEmail } from "./src/utils/mailer.js";
 
 import pool from "./src/config/database.js";
 import redis from "./src/config/redis.js";
@@ -73,13 +73,13 @@ app.use(
   }),
 );
 
-// sendEmail({
-//   to: process.env.SMTP_USER,
-//   subject: "✅ Mailer startup test",
-//   html: "<p>Backend mailer is working correctly.</p>",
-// })
-//   .then((r) => console.log("[startup] Mailer test:", r))
-//   .catch((e) => console.error("[startup] ✗ Mailer BROKEN:", e.message));
+sendEmail({
+  to: process.env.SMTP_USER,
+  subject: "✅ Mailer startup test",
+  html: "<p>Backend mailer is working correctly.</p>",
+})
+  .then((r) => console.log("[startup] Mailer test:", r))
+  .catch((e) => console.error("[startup] ✗ Mailer BROKEN:", e.message));
 
 // ── Stripe raw-body webhooks MUST come BEFORE express.json() ──────────
 app.post(
