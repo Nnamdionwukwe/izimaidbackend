@@ -1,6 +1,9 @@
 // src/utils/notify.js
 // Central notification dispatcher — handles in-app + email + push (future)
 // Used by ALL controllers — never call sendEmail directly from controllers,
+
+import { sendEmail } from "./mailer";
+
 // always go through notify() so preferences are respected
 
 // Notification type → preference column mapping
@@ -97,10 +100,11 @@ async function getPrefs(db, userId) {
 
 // Check if user wants this notification on this channel
 function prefAllowed(prefs, type, channel) {
-  if (!prefs) return true; // Default allow if prefs unavailable
+  if (!prefs) return true;
   const category = TYPE_TO_PREF[type] || "system";
   const key = `${channel}_${category}`;
-  return prefs[key] !== false; // Default true if column doesn't exist
+  // Only block if explicitly set to false — undefined/null means allow
+  return prefs[key] !== false;
 }
 
 // ── Core notify function ──────────────────────────────────────────────
