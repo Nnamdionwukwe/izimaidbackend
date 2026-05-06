@@ -842,8 +842,7 @@ export const initiateVideoCall = async (req, res) => {
     // ── Generate unique channel name ───────────────────────────────
     const channelName =
       booking.video_call_channel ||
-      `ds-${booking.id.slice(0, 8)}-${crypto.randomBytes(3).toString("hex")}`;
-
+      `deusizi-${booking.id.replace(/-/g, "").slice(0, 8)}-${crypto.randomBytes(3).toString("hex")}`.toLowerCase();
     // ── Generate Agora token ───────────────────────────────────────
     const { token: agoraToken, appId } = generateAgoraToken(channelName);
 
