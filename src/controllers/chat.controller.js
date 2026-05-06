@@ -433,7 +433,8 @@ export async function getMyConversations(req, res) {
           cu.avatar AS customer_avatar,
           mu.name   AS maid_name,
           mu.avatar AS maid_avatar,
-          (SELECT content    FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+(SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE content END 
+ FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message
           (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
         FROM conversations c
         LEFT JOIN bookings b ON b.id = c.booking_id
@@ -453,7 +454,8 @@ export async function getMyConversations(req, res) {
           cu.avatar AS customer_avatar,
           mu.name   AS maid_name,
           mu.avatar AS maid_avatar,
-          (SELECT content    FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+    (SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted' ELSE content END 
+ FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message
           (SELECT created_at FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
         FROM conversations c
         LEFT JOIN bookings b ON b.id = c.booking_id
