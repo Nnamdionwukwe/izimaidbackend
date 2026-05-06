@@ -2,6 +2,10 @@ import {
   sendBookingConfirmation,
   sendBookingCancelledEmail,
   sendNewBookingToMaid,
+  sendCheckInEmail, // ← ADD
+  sendCheckOutEmail, // ← ADD
+  sendReviewReceivedEmail, // ← ADD
+  sendSOSEmail,
   transporter,
 } from "../utils/mailer.js";
 import crypto from "crypto";
@@ -434,6 +438,35 @@ export const checkIn = async (req, res) => {
       });
     }
 
+    // Fetch maid name for the email
+    const { rows: partyRows } = await req.db.query(
+      `SELECT c.name AS customer_name, c.email AS customer_email,
+          m.name AS maid_name
+   FROM bookings b
+   JOIN users c ON c.id = b.customer_id
+   JOIN users m ON m.id = b.maid_id
+   WHERE b.id = $1`,
+      [req.params.id],
+    );
+    const party = partyRows[0];
+
+    await notify(req.db, {
+      userId: rows[0].customer_id,
+      type: "booking_checkin",
+      title: "🟢 Maid has arrived",
+      body: "Your maid checked in and has started the job.",
+      data: { booking_id: req.params.id },
+      action_url: `/bookings/${req.params.id}`,
+      sendMail: party
+        ? () =>
+            sendCheckInEmail(
+              { name: party.customer_name, email: party.customer_email },
+              { name: party.maid_name },
+              rows[0],
+            )
+        : undefined,
+    });
+
     if (lat && lng) {
       try {
         await req.db.query(
@@ -492,6 +525,34 @@ export const checkOut = async (req, res) => {
         error: "Booking not found or not in progress",
       });
     }
+
+    const { rows: partyRows } = await req.db.query(
+      `SELECT c.name AS customer_name, c.email AS customer_email,
+          m.name AS maid_name
+   FROM bookings b
+   JOIN users c ON c.id = b.customer_id
+   JOIN users m ON m.id = b.maid_id
+   WHERE b.id = $1`,
+      [req.params.id],
+    );
+    const party = partyRows[0];
+
+    await notify(req.db, {
+      userId: rows[0].customer_id,
+      type: "booking_checkout",
+      title: "🏁 Maid checked out",
+      body: "Your maid has finished. Please mark the job complete and leave a review.",
+      data: { booking_id: req.params.id },
+      action_url: `/bookings/${req.params.id}`,
+      sendMail: party
+        ? () =>
+            sendCheckOutEmail(
+              { name: party.customer_name, email: party.customer_email },
+              { name: party.maid_name },
+              rows[0],
+            )
+        : undefined,
+    });
 
     // ✅ Notify only on success — inside the success block
     await notify(req.db, {
@@ -1154,6 +1215,30 @@ export const submitReview = async (req, res) => {
       [booking.id, req.user.id, booking.maid_id, rating, comment || null],
     );
 
+    // Fetch maid info for email
+    const { rows: maidRows } = await req.db.query(
+      `SELECT name, email FROM users WHERE id = $1`,
+      [booking.maid_id],
+    );
+    const maid = maidRows[0];
+
+    await notify(req.db, {
+      userId: booking.maid_id,
+      type: "review_received",
+      title: "⭐ New Review",
+      body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
+      data: { booking_id: req.params.id, rating },
+      action_url: `/bookings/${req.params.id}`,
+      sendMail: maid
+        ? () =>
+            sendReviewReceivedEmail(
+              maid,
+              { rating, comment },
+              req.user.name || "A customer",
+            )
+        : undefined,
+    });
+
     if (!rows.length)
       return res.status(409).json({ error: "review already submitted" });
 
@@ -1279,6 +1364,7 @@ export const updateBookingStatus = async (req, res) => {
     const updated = rows[0];
 
     // Notify the OTHER party about status changes
+    // confirmed
     if (status === "confirmed") {
       await notify(req.db, {
         userId: booking.customer_id,
@@ -1288,8 +1374,32 @@ export const updateBookingStatus = async (req, res) => {
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
         priority: "high",
+        sendMail: () =>
+          sendBookingConfirmation(
+            { name: booking.customer_name, email: booking.customer_email },
+            updated,
+            { name: booking.maid_name, email: booking.maid_email },
+          ),
+      });
+      // ALSO email the maid that they have a new booking
+      await notify(req.db, {
+        userId: booking.maid_id,
+        type: "booking_created",
+        title: "🎉 New Booking",
+        body: `You have a new confirmed booking with ${booking.customer_name}.`,
+        data: { booking_id: id },
+        action_url: `/bookings/${id}`,
+        priority: "high",
+        sendMail: () =>
+          sendNewBookingToMaid(
+            { name: booking.maid_name, email: booking.maid_email },
+            updated,
+            { name: booking.customer_name, email: booking.customer_email },
+          ),
       });
     }
+
+    // declined
     if (status === "declined") {
       await notify(req.db, {
         userId: booking.customer_id,
@@ -1298,25 +1408,47 @@ export const updateBookingStatus = async (req, res) => {
         body: `${booking.maid_name} declined your booking.`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
+        sendMail: () =>
+          sendBookingCancelledEmail(
+            { name: booking.customer_name, email: booking.customer_email },
+            updated,
+            booking.maid_name,
+            declined_reason,
+          ),
       });
     }
+
+    // cancelled
     if (status === "cancelled") {
-      // Notify whoever DIDN'T cancel
-      const otherUserId =
-        req.user.role === "customer" ? booking.maid_id : booking.customer_id;
+      const otherUser =
+        req.user.role === "customer"
+          ? {
+              id: booking.maid_id,
+              name: booking.maid_name,
+              email: booking.maid_email,
+            }
+          : {
+              id: booking.customer_id,
+              name: booking.customer_name,
+              email: booking.customer_email,
+            };
       const cancellerName =
         req.user.role === "customer"
           ? booking.customer_name
           : booking.maid_name;
       await notify(req.db, {
-        userId: otherUserId,
+        userId: otherUser.id,
         type: "booking_cancelled",
         title: "🚫 Booking Cancelled",
         body: `${cancellerName} cancelled the booking.`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
+        sendMail: () =>
+          sendBookingCancelledEmail(otherUser, updated, cancellerName),
       });
     }
+
+    // completed
     if (status === "completed") {
       await notify(req.db, {
         userId: booking.customer_id,
@@ -1325,8 +1457,13 @@ export const updateBookingStatus = async (req, res) => {
         body: `Your booking with ${booking.maid_name} is complete. Leave a review!`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
+        sendMail: () =>
+          sendCheckOutEmail(
+            { name: booking.customer_name, email: booking.customer_email },
+            { name: booking.maid_name },
+            updated,
+          ),
       });
-      // Also notify maid
       await notify(req.db, {
         userId: booking.maid_id,
         type: "booking_completed",
@@ -1334,6 +1471,7 @@ export const updateBookingStatus = async (req, res) => {
         body: `Booking with ${booking.customer_name} is complete. Payment is being processed.`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
+        // No matching helper for "maid view of complete" — reuse confirmation styling or skip email
       });
     }
 
