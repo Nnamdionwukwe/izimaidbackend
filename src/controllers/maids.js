@@ -111,7 +111,14 @@ export const getMaid = async (req, res) => {
               mp.rate_custom, mp.pricing_note, mp.currency,
               mp.latitude, mp.longitude, mp.languages, mp.max_distance_km,
               mp.id_verified, mp.background_checked,
-              COALESCE(mp.id_verified, false) AS has_pro_badge
+              -- Pro badge from subscription, NOT from id_verified
+              CASE 
+                WHEN u.subscription_plan IS NOT NULL 
+                 AND u.subscription_plan != 'free'
+                 AND u.subscription_badge IS NOT NULL
+                THEN true 
+                ELSE false 
+              END AS has_pro_badge
        FROM maid_profiles mp
        JOIN users u ON u.id = mp.user_id
        WHERE u.id = $1 AND u.is_active = true`,
