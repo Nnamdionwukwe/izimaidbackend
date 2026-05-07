@@ -42,6 +42,12 @@ router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 
 // ─── Admin ───────────────────────────────────────────────────
 router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
+router.patch(
+  "/admin/documents/:docId/review",
+  requireAuth,
+  requireRole("admin"),
+  adminReviewDocument,
+); // ← new
 router.patch("/admin/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
 router.patch(
   "/admin/:id/activate",
@@ -61,12 +67,6 @@ router.delete(
   requireRole("admin"),
   adminDeleteReview,
 );
-router.patch(
-  "/admin/documents/:docId/review",
-  requireAuth,
-  requireRole("admin"),
-  adminReviewDocument,
-); // ← new
 
 // ─── Maid self ────────────────────────────────────────────────
 router.patch("/profile", requireAuth, updateProfile);
