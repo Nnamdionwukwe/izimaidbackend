@@ -85,7 +85,7 @@ const table = (...rows) => `
 // ══════════════════════════════════════════════════════════════════════
 
 export async function sendVerificationEmail(user, token) {
-  const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+  const verifyUrl = `${FRONTEND}/verify-email?token=${token}`;
   return sendEmail({
     to: user.email,
     subject: `Verify your ${APP_NAME} account`,
