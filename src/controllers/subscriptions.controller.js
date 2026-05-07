@@ -762,6 +762,10 @@ export const cancelSubscription = async (req, res) => {
         }),
     });
 
+    // Add after the DB update in cancelSubscription:
+    const { safeDel } = await import("../config/redis.js");
+    await safeDel(`user:${req.user.id}`);
+
     return res.json({
       message: immediate
         ? "Subscription cancelled immediately."
@@ -1764,10 +1768,12 @@ export const adminUpdateSubscription = async (req, res) => {
     // If cancelled immediately, reset user plan to free
     if (status === "cancelled") {
       await req.db.query(
-        `UPDATE users SET subscription_plan = 'free', subscription_badge = null
-         WHERE id = $1`,
+        `UPDATE users SET subscription_plan = 'free', subscription_badge = null WHERE id = $1`,
         [sub.user_id],
       );
+      // ← Add this:
+      const { safeDel } = await import("../config/redis.js");
+      await safeDel(`user:${sub.user_id}`);
     }
 
     // Notify user of status change

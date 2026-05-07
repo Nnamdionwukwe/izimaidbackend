@@ -250,16 +250,23 @@ export const getMe = async (req, res) => {
 
     const { rows } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.avatar, u.role, u.phone, u.country,
-              u.language, u.email_verified, u.auth_provider, u.created_at,
-              u.subscription_plan, u.subscription_badge,
-              s.theme, s.currency, s.notifications_email, s.notifications_push,
-              COALESCE(mp.id_verified, false) AS id_verified,
-              COALESCE(mp.background_checked, false) AS background_checked,
-              COALESCE(mp.id_verified, false) AS has_pro_badge
-       FROM users u
-       LEFT JOIN user_settings s ON s.user_id = u.id
-       LEFT JOIN maid_profiles mp ON mp.user_id = u.id
-       WHERE u.id = $1 AND u.is_active = true`,
+          u.language, u.email_verified, u.auth_provider, u.created_at,
+          u.subscription_plan, u.subscription_badge,
+          s.theme, s.currency, s.notifications_email, s.notifications_push,
+          COALESCE(mp.id_verified, false) AS id_verified,
+          COALESCE(mp.background_checked, false) AS background_checked,
+          -- Pro badge = has active paid subscription with a badge
+          CASE 
+            WHEN u.subscription_plan IS NOT NULL 
+             AND u.subscription_plan != 'free'
+             AND u.subscription_badge IS NOT NULL
+            THEN true 
+            ELSE false 
+          END AS has_pro_badge
+   FROM users u
+   LEFT JOIN user_settings s ON s.user_id = u.id
+   LEFT JOIN maid_profiles mp ON mp.user_id = u.id
+   WHERE u.id = $1 AND u.is_active = true`,
       [req.user.id],
     );
 
