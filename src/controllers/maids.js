@@ -698,13 +698,21 @@ export const adminReviewDocument = async (req, res) => {
     if (!rows.length)
       return res.status(404).json({ error: "document not found" });
 
-    // If approved, mark maid as id_verified
     if (status === "approved") {
       await req.db.query(
         `UPDATE maid_profiles SET id_verified = true WHERE user_id = $1`,
         [rows[0].maid_id],
       );
+    } else if (status === "rejected") {
+      // ← Revoke verification when document rejected
+      await req.db.query(
+        `UPDATE maid_profiles SET id_verified = false WHERE user_id = $1`,
+        [rows[0].maid_id],
+      );
     }
+
+    // ← Bust cache so badge disappears immediately
+    await safeDel(`user:${rows[0].maid_id}`);
 
     return res.json({ document: rows[0] });
   } catch (err) {
