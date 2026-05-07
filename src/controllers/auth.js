@@ -51,7 +51,7 @@ function getDeviceLabel(req) {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES = process.env.JWT_EXPIRES || "7d";
+const JWT_EXPIRES = process.env.JWT_EXPIRES || "30d";
 
 function signToken(user) {
   if (!JWT_SECRET) throw new Error("JWT_SECRET not configured");
