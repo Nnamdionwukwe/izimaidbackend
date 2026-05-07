@@ -128,7 +128,7 @@ export async function sendNewLoginAlert(user, { ip, device }) {
 }
 
 export async function sendPasswordResetEmail(user, token) {
-  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+  const resetUrl = `${FRONTEND}/reset-password?token=${token}`;
   return sendEmail({
     to: user.email,
     subject: `Reset your ${APP_NAME} password`,
