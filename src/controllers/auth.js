@@ -427,23 +427,63 @@ export const resendVerification = async (req, res) => {
   if (!email) return res.status(400).json({ error: "email is required" });
 
   try {
+    // 1. Look up the user first so we can log what's actually happening
+    const { rows: userRows } = await req.db.query(
+      `SELECT id, email, name, email_verified, is_active
+       FROM users WHERE email = $1`,
+      [email.toLowerCase()],
+    );
+
+    if (!userRows.length) {
+      console.log(
+        `[resendVerification] no user found for ${email.toLowerCase()}`,
+      );
+      return res.json({
+        message:
+          "If that email exists and is unverified, a new link has been sent.",
+      });
+    }
+
+    const user = userRows[0];
+
+    if (!user.is_active) {
+      console.log(`[resendVerification] user ${user.email} is deactivated`);
+      return res.json({
+        message:
+          "If that email exists and is unverified, a new link has been sent.",
+      });
+    }
+
+    if (user.email_verified) {
+      console.log(
+        `[resendVerification] ${user.email} is already verified — no email sent`,
+      );
+      return res.json({
+        message: "This email is already verified. You can sign in.",
+        code: "ALREADY_VERIFIED",
+      });
+    }
+
+    // 2. Generate fresh token
     const new_token = crypto.randomBytes(32).toString("hex");
     const new_expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
-    const { rows } = await req.db.query(
+    // 3. Update token in DB
+    await req.db.query(
       `UPDATE users
-       SET email_verify_token = $1, email_verify_expires = $2, updated_at = now()
-       WHERE email = $3 AND email_verified = false
-       RETURNING id, email, name`,
-      [new_token, new_expires, email.toLowerCase()],
+       SET email_verify_token = $1,
+           email_verify_expires = $2,
+           updated_at = now()
+       WHERE id = $3`,
+      [new_token, new_expires, user.id],
     );
 
-    if (rows.length)
-      sendVerificationEmail(rows[0], new_token).catch(console.error);
+    // 4. Send the email — await it so logs reflect actual send result
+    const result = await sendVerificationEmail(user, new_token);
+    console.log(`[resendVerification] sent to ${user.email}, result:`, result);
 
     return res.json({
-      message:
-        "If that email exists and is unverified, a new link has been sent.",
+      message: "Verification link has been sent to your email.",
     });
   } catch (err) {
     console.error("[resendVerification]", err);
