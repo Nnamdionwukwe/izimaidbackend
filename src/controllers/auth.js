@@ -245,15 +245,20 @@ export const completeProfile = async (req, res) => {
 // ── Get current user ───────────────────────────────────────────────────
 export const getMe = async (req, res) => {
   try {
-    const cached = await safeGet(`user:${req.user.id}`);
-    if (cached) return res.json({ user: JSON.parse(cached) });
+    // Always skip cache so badge/subscription changes show immediately
+    await safeDel(`user:${req.user.id}`);
 
     const { rows } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.avatar, u.role, u.phone, u.country,
               u.language, u.email_verified, u.auth_provider, u.created_at,
-              s.theme, s.currency, s.notifications_email, s.notifications_push
+              u.subscription_plan, u.subscription_badge,
+              s.theme, s.currency, s.notifications_email, s.notifications_push,
+              COALESCE(mp.id_verified, false) AS id_verified,
+              COALESCE(mp.background_checked, false) AS background_checked,
+              COALESCE(mp.id_verified, false) AS has_pro_badge
        FROM users u
        LEFT JOIN user_settings s ON s.user_id = u.id
+       LEFT JOIN maid_profiles mp ON mp.user_id = u.id
        WHERE u.id = $1 AND u.is_active = true`,
       [req.user.id],
     );
