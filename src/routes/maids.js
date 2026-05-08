@@ -47,7 +47,6 @@ router.patch(
   requireRole("admin"),
   adminReviewDocument,
 ); // ← new
-router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 router.patch("/admin/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
 router.patch(
   "/admin/:id/activate",
@@ -67,6 +66,7 @@ router.delete(
   requireRole("admin"),
   adminDeleteReview,
 );
+router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 
 // ─── Maid self ────────────────────────────────────────────────
 router.patch("/profile", requireAuth, updateProfile);
