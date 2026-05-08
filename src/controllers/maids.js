@@ -714,10 +714,12 @@ export const adminReviewDocument = async (req, res) => {
       await req.db.query(
         `UPDATE maid_profiles 
      SET id_verified = false 
-     WHERE LOWER(user_id::text) = LOWER($1::text)`,
+     WHERE user_id::text ILIKE $1::text`,
         [rows[0].maid_id],
       );
     }
+
+    await safeDel(`user:${rows[0].maid_id}`);
 
     // ← Bust cache so badge disappears immediately
     await safeDel(`user:${rows[0].maid_id}`);
