@@ -41,13 +41,13 @@ const upload = multer({
 router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 
 // ─── Admin ───────────────────────────────────────────────────
-router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 router.patch(
   "/admin/documents/:docId/review",
   requireAuth,
   requireRole("admin"),
   adminReviewDocument,
 ); // ← new
+router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 router.patch("/admin/:id", requireAuth, requireRole("admin"), adminUpdateMaid);
 router.patch(
   "/admin/:id/activate",
