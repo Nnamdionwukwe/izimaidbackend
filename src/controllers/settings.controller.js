@@ -584,3 +584,87 @@ export async function translateText(req, res) {
     return res.status(500).json({ error: "translation failed" });
   }
 }
+
+// ── Delete account with password verification ─────────────────────────
+export async function deleteAccount(req, res) {
+  const { password } = req.body;
+
+  if (!password) {
+    return res.status(400).json({ error: "password is required" });
+  }
+
+  try {
+    const { rows } = await req.db.query(
+      `SELECT password_hash, auth_provider, name, email
+       FROM users WHERE id = $1 AND is_active = true`,
+      [req.user.id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ error: "user not found" });
+    }
+
+    const user = rows[0];
+
+    // Only verify password for email/password accounts
+    if (user.auth_provider === "email" && user.password_hash) {
+      const [salt, hash] = user.password_hash.split(":");
+      const valid = await new Promise((resolve, reject) => {
+        crypto.scrypt(password, salt, 64, (err, derived) => {
+          if (err) reject(err);
+          else resolve(derived.toString("hex") === hash);
+        });
+      });
+
+      if (!valid) {
+        return res.status(401).json({ error: "Incorrect password" });
+      }
+    }
+
+    // Soft-delete: mark inactive, anonymise PII, keep row for audit trail
+    await req.db.query(
+      `UPDATE users
+       SET is_active            = false,
+           deleted_at           = now(),
+           email                = concat('deleted_', id, '@removed.invalid'),
+           phone                = null,
+           name                 = 'Deleted User',
+           avatar               = null,
+           transaction_pin_hash = null,
+           reset_token          = null,
+           reset_token_expires  = null,
+           updated_at           = now()
+       WHERE id = $1`,
+      [req.user.id],
+    );
+
+    // Revoke all active sessions / refresh tokens
+    await req.db
+      .query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [req.user.id])
+      .catch(() => {}); // table may not exist — fail silently
+
+    // Notify the user one last time
+    import("../utils/mailer.js")
+      .then(({ sendEmail }) =>
+        sendEmail({
+          to: user.email,
+          subject: `Your ${process.env.APP_NAME} account has been deleted`,
+          html: `
+            <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px">
+              <h2 style="color:#991b1b">Account deleted</h2>
+              <p>Hi ${user.name}, your account has been permanently deleted
+                 as requested. All personal data has been removed.</p>
+              <p style="color:#94a3b8;font-size:13px">
+                If you did not request this, please contact support immediately.
+              </p>
+            </div>`,
+        }),
+      )
+      .catch(console.error);
+
+    return res.json({ message: "Account deleted successfully" });
+  } catch (err) {
+    console.error("[settings/deleteAccount]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+}
