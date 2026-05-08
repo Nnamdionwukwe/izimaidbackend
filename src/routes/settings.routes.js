@@ -14,6 +14,8 @@ import {
   verifyTransactionPin,
   requestPinReset,
   confirmPinReset,
+  // ── Account ──
+  deleteAccount,
 } from "../controllers/settings.controller.js";
 
 const router = Router();
