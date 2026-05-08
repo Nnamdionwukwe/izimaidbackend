@@ -19,7 +19,6 @@ import {
   getMaidDocuments,
   adminReviewDocument,
 } from "../controllers/maids.js";
-import debugReviewHook from "../db/logAdminReviewHit.js";
 
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { uploadMediaToCloudinary } from "../utils/cloudinary-utils.js";
@@ -53,13 +52,6 @@ router.post("/avatar", requireAuth, upload.single("avatar"), uploadAvatar);
 // Place document review FIRST to avoid route swallowing
 // ─────────────────────────────────────────────
 
-router.patch(
-  "/admin/documents/:docId/review",
-  requireAuth,
-  requireRole("admin"),
-  debugReviewHook, // <── ADD THIS
-  adminReviewDocument,
-);
 // Review maid document (Approve/Reject)
 router.patch(
   "/admin/documents/:docId/review",
