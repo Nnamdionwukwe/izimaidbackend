@@ -37,4 +37,7 @@ router.post("/pin/change", requireAuth, changeTransactionPin);
 router.post("/pin/verify", requireAuth, verifyTransactionPin);
 router.post("/pin/reset/request", requireAuth, requestPinReset);
 
+// ── Account deletion (password-verified) ─────────────────────────────
+router.post("/delete-account", requireAuth, deleteAccount); // ← ADD THIS
+
 export default router;
