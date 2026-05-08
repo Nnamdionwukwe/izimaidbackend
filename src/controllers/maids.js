@@ -711,10 +711,10 @@ export const adminReviewDocument = async (req, res) => {
         [rows[0].maid_id],
       );
     } else if (status === "rejected") {
-      // ← Revoke verification when document rejected
       await req.db.query(
-        `UPDATE maid_profiles SET id_verified = false 
-   WHERE user_id = (SELECT user_id FROM maid_profiles WHERE id = $1)`,
+        `UPDATE maid_profiles 
+     SET id_verified = false 
+     WHERE LOWER(user_id::text) = LOWER($1::text)`,
         [rows[0].maid_id],
       );
     }
