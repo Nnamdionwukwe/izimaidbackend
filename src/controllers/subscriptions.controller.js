@@ -457,7 +457,6 @@ export const verifySubscriptionPayment = async (req, res) => {
           : null,
       });
     } else if (reference) {
-      // Paystack
       const psRes = await paystackRequest(
         "GET",
         `/transaction/verify/${reference}`,
@@ -473,6 +472,9 @@ export const verifySubscriptionPayment = async (req, res) => {
       promoCode = meta.promo_code;
       amount = psRes.data.amount / 100;
 
+      // ← Fetch plan to get the correct interval instead of hardcoding "monthly"
+      const psyPlan = await getPlan(req.db, planId);
+
       await activateSubscription(req.db, {
         userId,
         planId,
@@ -482,7 +484,7 @@ export const verifySubscriptionPayment = async (req, res) => {
         paystack_sub_code: psRes.data.plan_object?.subscription_code,
         paystack_token: psRes.data.plan_object?.email_token,
         promoCode,
-        interval: "monthly",
+        interval: psyPlan?.interval || "monthly", // ← was hardcoded "monthly"
       });
     } else {
       return res
