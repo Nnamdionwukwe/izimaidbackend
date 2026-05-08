@@ -920,6 +920,11 @@ export const reviewDocument = async (req, res) => {
         `UPDATE maid_profiles SET id_verified = true WHERE user_id = $1`,
         [rows[0].maid_id],
       );
+    } else if (status === "rejected") {
+      await req.db.query(
+        `UPDATE maid_profiles SET id_verified = false WHERE user_id = $1`,
+        [rows[0].maid_id],
+      );
     }
 
     // Get maid details for notification + email
