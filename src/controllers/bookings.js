@@ -1423,14 +1423,23 @@ export const updateBookingStatus = async (req, res) => {
     }
 
     // completed
+
+    // NEW — set escrow instead of crediting wallet immediately:
     if (status === "completed") {
+      // Put funds in escrow — customer must release before maid is paid
+      await req.db.query(
+        `UPDATE bookings SET escrow_status = 'pending_release' WHERE id = $1`,
+        [id],
+      );
+
       await notify(req.db, {
         userId: booking.customer_id,
         type: "booking_completed",
         title: "🎉 Job Completed",
-        body: `Your booking with ${booking.maid_name} is complete. Leave a review!`,
+        body: `${booking.maid_name} marked the job complete. Please release funds if you're satisfied.`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
+        priority: "high",
         sendMail: () =>
           sendCheckOutEmail(
             { name: booking.customer_name, email: booking.customer_email },
@@ -1442,10 +1451,9 @@ export const updateBookingStatus = async (req, res) => {
         userId: booking.maid_id,
         type: "booking_completed",
         title: "🎉 Job Marked Complete",
-        body: `Booking with ${booking.customer_name} is complete. Payment is being processed.`,
+        body: `Booking with ${booking.customer_name} is complete. Funds are in escrow until the customer releases them.`,
         data: { booking_id: id },
         action_url: `/bookings/${id}`,
-        // No matching helper for "maid view of complete" — reuse confirmation styling or skip email
       });
     }
 
@@ -1455,6 +1463,83 @@ export const updateBookingStatus = async (req, res) => {
     });
   } catch (err) {
     console.error("[bookings/updateBookingStatus]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const releaseEscrow = async (req, res) => {
+  try {
+    // Verify booking belongs to customer and is awaiting release
+    const { rows } = await req.db.query(
+      `SELECT b.*,
+              m.name AS maid_name, m.email AS maid_email,
+              mp.currency AS maid_currency,
+              p.currency  AS payment_currency
+       FROM bookings b
+       JOIN users m ON m.id = b.maid_id
+       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+       LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
+       WHERE b.id = $1
+         AND b.customer_id = $2
+         AND b.status = 'completed'
+         AND b.escrow_status = 'pending_release'`,
+      [req.params.id, req.user.id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        error: "Booking not found, not yours, or funds already released",
+      });
+    }
+
+    const booking = rows[0];
+    const currency = booking.payment_currency || booking.maid_currency || "NGN";
+    const maidPayout = Number(booking.total_amount) * 0.9; // 90% to maid
+
+    // Mark as released
+    await req.db.query(
+      `UPDATE bookings
+       SET escrow_status      = 'released',
+           escrow_released_at = now(),
+           escrow_released_by = $2,
+           updated_at         = now()
+       WHERE id = $1`,
+      [booking.id, req.user.id],
+    );
+
+    // Credit maid wallet
+    try {
+      const { creditMaidWallet } = await import("./wallet.controller.js");
+      await creditMaidWallet(req.db, {
+        maidId: booking.maid_id,
+        currency,
+        amount: maidPayout,
+        description: `Escrow released by customer`,
+        bookingId: booking.id,
+      });
+    } catch (walletErr) {
+      console.error("[releaseEscrow] wallet credit failed:", walletErr.message);
+      // Don't fail the response — escrow is marked released; wallet team can retry
+    }
+
+    // Notify maid
+    await notify(req.db, {
+      userId: booking.maid_id,
+      type: "payment_received",
+      title: "💰 Funds Released!",
+      body: `Customer released your payment for the completed booking. Check your wallet.`,
+      data: { booking_id: booking.id },
+      action_url: `/bookings/${booking.id}`,
+      priority: "high",
+    });
+
+    return res.json({
+      message: "Funds released to maid successfully",
+      amount: maidPayout,
+      currency,
+    });
+  } catch (err) {
+    console.error("[bookings/releaseEscrow]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };

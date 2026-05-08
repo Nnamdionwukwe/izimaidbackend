@@ -20,7 +20,7 @@ import {
   getVideoCallStatus,
   endVideoCall,
   getActiveCallForUser,
-  savePushToken,
+  releaseEscrow,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -62,5 +62,11 @@ router.post("/:id/sos", requireAuth, triggerSOS);
 router.post("/:id/video-call", requireAuth, initiateVideoCall);
 router.get("/:id/video-call", requireAuth, getVideoCallStatus);
 router.delete("/:id/video-call", requireAuth, endVideoCall);
+router.post(
+  "/:id/release-funds",
+  requireAuth,
+  requireRole("customer"),
+  releaseEscrow,
+);
 
 export default router;
