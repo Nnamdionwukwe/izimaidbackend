@@ -1001,17 +1001,18 @@ export const listPendingPayments = async (req, res) => {
   params.push(50, 0);
   try {
     const { rows } = await req.db.query(
-      `SELECT b.id AS booking_id, b.status AS booking_status, b.service_date, b.total_amount,
-              b.address, b.duration_hours, b.created_at,
-              c.name AS customer_name, c.email AS customer_email, m.name AS maid_name,
-              p.id AS payment_id, p.status AS payment_status, p.gateway,
-              p.paystack_reference, p.stripe_payment_id, p.bank_transfer_ref,
-              p.bank_transfer_proof, p.platform_fee, p.maid_payout, p.paid_at
-       FROM bookings b
-       JOIN users c ON c.id=b.customer_id JOIN users m ON m.id=b.maid_id
-       JOIN payments p ON p.booking_id=b.id
-       WHERE ${conditions.join(" AND ")}
-       ORDER BY p.paid_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      `SELECT DISTINCT ON (b.id) b.id AS booking_id, b.status AS booking_status, b.service_date, b.total_amount,
+          b.address, b.duration_hours, b.created_at,
+          c.name AS customer_name, c.email AS customer_email, m.name AS maid_name,
+          p.id AS payment_id, p.status AS payment_status, p.gateway,
+          p.paystack_reference, p.stripe_payment_id, p.bank_transfer_ref,
+          p.bank_transfer_proof, p.platform_fee, p.maid_payout, p.paid_at,
+          p.currency
+   FROM bookings b
+   JOIN users c ON c.id=b.customer_id JOIN users m ON m.id=b.maid_id
+   JOIN payments p ON p.booking_id=b.id
+   WHERE ${conditions.join(" AND ")}
+   ORDER BY b.id, p.paid_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
     return res.json({ bookings: rows });
