@@ -1099,7 +1099,7 @@ export const adminListBankTransfers = async (req, res) => {
   const isHistory = type === "history";
   try {
     const { rows } = await req.db.query(
-      `SELECT p.id AS payment_id, p.amount, p.currency,
+      `SELECT DISTINCT ON (p.id) p.id AS payment_id, p.amount, p.currency,
               p.bank_transfer_ref, p.bank_transfer_proof, p.bank_transfer_status,
               p.paid_at, p.created_at, p.notes, p.status,
               b.id AS booking_id, b.service_date, b.address, b.total_amount,
@@ -1112,7 +1112,7 @@ export const adminListBankTransfers = async (req, res) => {
        JOIN users m ON m.id = b.maid_id
        WHERE p.gateway = 'bank_transfer'
          AND p.bank_transfer_status = ANY($1)
-       ORDER BY p.created_at DESC
+       ORDER BY p.id, p.created_at DESC
        LIMIT 100`,
       [
         isHistory
@@ -1133,7 +1133,7 @@ export const adminListCryptoPayments = async (req, res) => {
   const isHistory = type === "history";
   try {
     const { rows } = await req.db.query(
-      `SELECT p.id AS payment_id, p.amount, p.currency, p.status,
+      `SELECT DISTINCT ON (p.id) p.id AS payment_id, p.amount, p.currency, p.status,
               p.notes, p.paid_at, p.created_at,
               b.id AS booking_id, b.service_date, b.address, b.total_amount,
               b.duration_hours,
@@ -1145,7 +1145,7 @@ export const adminListCryptoPayments = async (req, res) => {
        JOIN users m ON m.id = b.maid_id
        WHERE p.gateway = 'crypto'
          AND p.status = ANY($1)
-       ORDER BY p.created_at DESC
+       ORDER BY p.id, p.created_at DESC
        LIMIT 100`,
       [isHistory ? ["success", "failed", "refunded"] : ["pending"]],
     );
