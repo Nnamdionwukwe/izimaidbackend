@@ -183,8 +183,9 @@ export const listBookings = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT DISTINCT ON (b.id)
-         b.id, b.status, b.service_date, b.duration_hours,
-         b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
+        b.id, b.status, b.service_date, b.duration_hours,
+b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
+b.checkout_at,
          c.name   AS customer_name,
          c.avatar AS customer_avatar,
          m.id     AS maid_id,
