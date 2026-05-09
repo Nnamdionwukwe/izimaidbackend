@@ -24,15 +24,16 @@ export const getWallet = async (req, res) => {
     // ── Always sync ALL currencies from actual completed bookings ──
     const { rows: earnRows } = await req.db.query(
       `SELECT
-         COALESCE(p.currency, mp.currency, 'NGN') AS currency,
-         COALESCE(SUM(b.total_amount), 0) AS total_earned
-       FROM bookings b
-       LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-       WHERE b.maid_id = $1
-         AND b.status = 'completed'
-         AND b.total_amount > 0
-       GROUP BY COALESCE(p.currency, mp.currency, 'NGN')`,
+     COALESCE(p.currency, mp.currency, 'NGN') AS currency,
+     COALESCE(SUM(b.total_amount), 0) AS total_earned
+   FROM bookings b
+   LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
+   LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+   WHERE b.maid_id = $1
+     AND b.status = 'completed'
+     AND b.escrow_status = 'released'
+     AND b.total_amount > 0
+   GROUP BY COALESCE(p.currency, mp.currency, 'NGN')`,
       [req.user.id],
     );
 
