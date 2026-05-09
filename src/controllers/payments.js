@@ -1093,12 +1093,15 @@ export const listCustomerPayments = async (req, res) => {
   }
 };
 
+// Replace adminListBankTransfers:
 export const adminListBankTransfers = async (req, res) => {
+  const { type } = req.query;
+  const isHistory = type === "history";
   try {
     const { rows } = await req.db.query(
       `SELECT p.id AS payment_id, p.amount, p.currency,
               p.bank_transfer_ref, p.bank_transfer_proof, p.bank_transfer_status,
-              p.paid_at, p.created_at, p.notes,
+              p.paid_at, p.created_at, p.notes, p.status,
               b.id AS booking_id, b.service_date, b.address, b.total_amount,
               b.duration_hours,
               c.name AS customer_name, c.email AS customer_email,
@@ -1108,9 +1111,14 @@ export const adminListBankTransfers = async (req, res) => {
        JOIN users c ON c.id = b.customer_id
        JOIN users m ON m.id = b.maid_id
        WHERE p.gateway = 'bank_transfer'
-         AND p.bank_transfer_status IN ('awaiting_proof', 'proof_submitted')
+         AND p.bank_transfer_status = ANY($1)
        ORDER BY p.created_at DESC
-       LIMIT 50`,
+       LIMIT 100`,
+      [
+        isHistory
+          ? ["verified", "rejected"]
+          : ["awaiting_proof", "proof_submitted"],
+      ],
     );
     return res.json({ payments: rows });
   } catch (err) {
@@ -1119,7 +1127,10 @@ export const adminListBankTransfers = async (req, res) => {
   }
 };
 
+// Replace adminListCryptoPayments:
 export const adminListCryptoPayments = async (req, res) => {
+  const { type } = req.query;
+  const isHistory = type === "history";
   try {
     const { rows } = await req.db.query(
       `SELECT p.id AS payment_id, p.amount, p.currency, p.status,
@@ -1133,8 +1144,10 @@ export const adminListCryptoPayments = async (req, res) => {
        JOIN users c ON c.id = b.customer_id
        JOIN users m ON m.id = b.maid_id
        WHERE p.gateway = 'crypto'
+         AND p.status = ANY($1)
        ORDER BY p.created_at DESC
-       LIMIT 50`,
+       LIMIT 100`,
+      [isHistory ? ["success", "failed", "refunded"] : ["pending"]],
     );
     return res.json({ payments: rows });
   } catch (err) {
