@@ -1484,12 +1484,11 @@ export const releaseEscrow = async (req, res) => {
 
     // Credit maid wallet
     try {
-      const { creditMaidWallet } = await import("./wallet.controller.js");
-      await creditMaidWallet(req.db, {
+      const { releaseEscrowToWallet } = await import("./wallet.controller.js");
+      await releaseEscrowToWallet(req.db, {
         maidId: booking.maid_id,
         currency,
         amount: maidPayout,
-        description: `Escrow released by customer`,
         bookingId: booking.id,
       });
     } catch (walletErr) {

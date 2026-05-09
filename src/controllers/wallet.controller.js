@@ -544,3 +544,36 @@ export const adminAdjustWallet = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+// Add this new export after creditMaidWallet:
+export async function releaseEscrowToWallet(
+  db,
+  { maidId, currency, amount, bookingId },
+) {
+  currency = (currency || "NGN").toUpperCase();
+  await ensureWallet(db, maidId, currency);
+
+  const { rows } = await db.query(
+    `UPDATE maid_wallets
+     SET available_balance = available_balance + $1,
+         total_earned      = total_earned      + $1,
+         updated_at        = now()
+     WHERE maid_id = $2 AND currency = $3
+     RETURNING available_balance`,
+    [amount, maidId, currency],
+  );
+
+  await db.query(
+    `INSERT INTO wallet_transactions
+       (maid_id, currency, type, amount, balance_after, description, booking_id)
+     VALUES ($1, $2, 'credit', $3, $4, $5, $6)`,
+    [
+      maidId,
+      currency,
+      amount,
+      Number(rows[0]?.available_balance || 0),
+      "Escrow released by customer — available for withdrawal",
+      bookingId || null,
+    ],
+  );
+}
