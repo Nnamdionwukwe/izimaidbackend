@@ -22,6 +22,8 @@ import {
   adminListPayouts,
   listPendingPayments,
   listCustomerPayments,
+  adminListBankTransfers,
+  adminListCryptoPayments,
 } from "../controllers/payments.js";
 
 const router = Router();
@@ -89,6 +91,19 @@ router.patch(
   requireAuth,
   requireRole("admin"),
   adminProcessPayout,
+);
+
+router.get(
+  "/bank-transfers",
+  requireAuth,
+  requireRole("admin"),
+  adminListBankTransfers,
+);
+router.get(
+  "/crypto",
+  requireAuth,
+  requireRole("admin"),
+  adminListCryptoPayments,
 );
 
 export default router;

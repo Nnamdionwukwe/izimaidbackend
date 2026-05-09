@@ -1092,3 +1092,53 @@ export const listCustomerPayments = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+export const adminListBankTransfers = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT p.id AS payment_id, p.amount, p.currency,
+              p.bank_transfer_ref, p.bank_transfer_proof, p.bank_transfer_status,
+              p.paid_at, p.created_at, p.notes,
+              b.id AS booking_id, b.service_date, b.address, b.total_amount,
+              b.duration_hours,
+              c.name AS customer_name, c.email AS customer_email,
+              m.name AS maid_name
+       FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE p.gateway = 'bank_transfer'
+         AND p.bank_transfer_status IN ('awaiting_proof', 'proof_submitted')
+       ORDER BY p.created_at DESC
+       LIMIT 50`,
+    );
+    return res.json({ payments: rows });
+  } catch (err) {
+    console.error("[payments/adminListBankTransfers]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+export const adminListCryptoPayments = async (req, res) => {
+  try {
+    const { rows } = await req.db.query(
+      `SELECT p.id AS payment_id, p.amount, p.currency, p.status,
+              p.notes, p.paid_at, p.created_at,
+              b.id AS booking_id, b.service_date, b.address, b.total_amount,
+              b.duration_hours,
+              c.name AS customer_name, c.email AS customer_email,
+              m.name AS maid_name
+       FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE p.gateway = 'crypto'
+       ORDER BY p.created_at DESC
+       LIMIT 50`,
+    );
+    return res.json({ payments: rows });
+  } catch (err) {
+    console.error("[payments/adminListCryptoPayments]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
