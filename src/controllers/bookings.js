@@ -344,36 +344,10 @@ export const updateStatus = async (req, res) => {
 
     // ── Credit maid wallet when booking completes ─────────────────
     if (status === "completed") {
-      try {
-        const { creditMaidWallet } = await import("./wallet.controller.js");
-
-        // Get currency from payment or maid profile
-        const { rows: payRows } = await req.db.query(
-          `SELECT p.currency AS payment_currency, mp.currency AS maid_currency
-           FROM bookings b
-           LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-           LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-           WHERE b.id = $1`,
-          [booking.id],
-        );
-        const currency =
-          payRows[0]?.payment_currency || payRows[0]?.maid_currency || "NGN";
-        const maidPayout = Number(booking.total_amount) * 0.9;
-
-        await creditMaidWallet(req.db, {
-          maidId: booking.maid_id,
-          currency,
-          amount: maidPayout,
-          description: `Booking payment`,
-          bookingId: booking.id,
-        });
-      } catch (walletErr) {
-        // Never crash the status update over wallet issues
-        console.error(
-          "[updateStatus] wallet credit failed:",
-          walletErr.message,
-        );
-      }
+      await req.db.query(
+        `UPDATE bookings SET escrow_status = 'pending_release' WHERE id = $1`,
+        [booking.id],
+      );
     }
 
     // ── Fetch both users for emails ───────────────────────────────
