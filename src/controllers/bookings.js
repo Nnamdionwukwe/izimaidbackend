@@ -1468,7 +1468,7 @@ export const releaseEscrow = async (req, res) => {
 
     const booking = rows[0];
     const currency = booking.payment_currency || booking.maid_currency || "NGN";
-    const maidPayout = Number(booking.total_amount) * 0.9; // 90% to maid
+    const maidPayout = Number(booking.total_amount); // maid gets 100% — fee charged on withdrawal
 
     // Mark as released
     await req.db.query(

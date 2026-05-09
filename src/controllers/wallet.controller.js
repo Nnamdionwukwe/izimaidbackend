@@ -25,7 +25,7 @@ export const getWallet = async (req, res) => {
     const { rows: earnRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, mp.currency, 'NGN') AS currency,
-         COALESCE(SUM(b.total_amount * 0.9), 0)   AS total_earned
+         COALESCE(SUM(b.total_amount), 0) AS total_earned
        FROM bookings b
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
        LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
@@ -42,15 +42,15 @@ export const getWallet = async (req, res) => {
 
       await req.db.query(
         `INSERT INTO maid_wallets
-           (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
-         VALUES ($1, $2, $3, 0, $3, 0)
-         ON CONFLICT (maid_id, currency) DO UPDATE SET
-           total_earned = GREATEST(maid_wallets.total_earned, $3),
-           available_balance = GREATEST(
-             maid_wallets.available_balance,
-             GREATEST(0, $3 - maid_wallets.total_withdrawn - maid_wallets.pending_balance)
-           ),
-           updated_at = now()`,
+     (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
+   VALUES ($1, $2, $3, 0, $3, 0)
+   ON CONFLICT (maid_id, currency) DO UPDATE SET
+     total_earned = GREATEST(maid_wallets.total_earned, $3),
+     available_balance = GREATEST(
+       maid_wallets.available_balance,
+       GREATEST(0, $3 - maid_wallets.total_withdrawn - maid_wallets.pending_balance)
+     ),
+     updated_at = now()`,
         [req.user.id, currency, earned],
       );
     }
