@@ -110,7 +110,7 @@ export const getMaid = async (req, res) => {
               mp.rate_hourly, mp.rate_daily, mp.rate_weekly, mp.rate_monthly,
               mp.rate_custom, mp.pricing_note, mp.currency,
               mp.latitude, mp.longitude, mp.languages, mp.max_distance_km,
-              mp.id_verified, mp.background_checked,
+              mp.id_verified, mp.background_checked, mp.completed_bookings,
               -- Pro badge from subscription, NOT from id_verified
               CASE 
                 WHEN u.subscription_plan IS NOT NULL 
