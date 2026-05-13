@@ -115,6 +115,7 @@ export const getWallet = async (req, res) => {
 
     return res.json({
       wallets: walletsWithEscrow,
+      escrow_by_currency: escrowMap, // ← ADD: all currencies with pending escrow
       wallet: {
         ...primary,
         available: Number(primary.available_balance),
