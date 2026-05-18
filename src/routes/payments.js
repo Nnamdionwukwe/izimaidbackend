@@ -1,109 +1,59 @@
-import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth.js";
-import express from "express";
-// REPLACE the entire import block — remove the duplicate getMaidEarnings:
+// src/routes/payment.routes.js
+// Routes match EXACTLY what the website frontend calls.
+
+import express, { Router } from "express";
+import { protect, requireRole } from "../middleware/auth.middleware.js";
 import {
-  initializePayment,
-  initializeStripePayment,
-  initializeBankTransfer,
-  confirmBankTransfer,
-  initializeCryptoPayment,
-  verifyPayment,
-  webhook,
-  stripeWebhook,
-  getPayment,
-  getMaidEarnings,
-  saveMaidBankDetails,
-  getMaidBankDetails,
-  adminApproveBooking,
-  adminRejectBooking,
-  adminVerifyBankTransfer,
-  adminProcessPayout,
-  adminListPayouts,
-  listPendingPayments,
-  listCustomerPayments,
-  adminListBankTransfers,
-  adminListCryptoPayments,
-} from "../controllers/payments.js";
+  initializePayment, // POST /initialize          (Paystack)
+  initializeStripePayment, // POST /initialize/stripe   (Stripe Checkout)
+  initializeBankTransfer, // POST /initialize/bank
+  initializeCryptoPayment, // POST /initialize/crypto
+  verifyPayment, // GET  /verify
+  getPayment, // GET  /booking/:booking_id
+  stripeWebhook, // POST /webhook/stripe
+  paystackWebhook, // POST /webhook
+} from "../controllers/payment.controller.js";
 
 const router = Router();
 
-// ── Customer payments ─────────────────────────────────────────────────
-router.post("/initialize", requireAuth, initializePayment); // Paystack
-router.post("/initialize/stripe", requireAuth, initializeStripePayment); // Stripe
-router.post("/initialize/bank", requireAuth, initializeBankTransfer); // Bank transfer
-router.post("/confirm/bank", requireAuth, confirmBankTransfer); // Upload proof
-router.post("/initialize/crypto", requireAuth, initializeCryptoPayment); // Crypto
-router.get("/my", requireAuth, listCustomerPayments);
-
-router.get("/verify", requireAuth, verifyPayment); // ?gateway=paystack&reference=x OR ?gateway=stripe&session_id=x
-router.get("/booking/:booking_id", requireAuth, getPayment);
-
-// ── Maid ──────────────────────────────────────────────────────────────
-router.get("/earnings", requireAuth, requireRole("maid"), getMaidEarnings);
-router.get(
-  "/bank-details",
-  requireAuth,
-  requireRole("maid"),
-  getMaidBankDetails,
-);
-// Add this line with your other maid routes:
-router.get("/maid/earnings", requireAuth, requireRole("maid"), getMaidEarnings);
+// ── Paystack Stripe Bank Crypto init ─────────────────────────────────────────
+router.post("/initialize", protect, requireRole("HIRER"), initializePayment);
 router.post(
-  "/bank-details",
-  requireAuth,
-  requireRole("maid"),
-  saveMaidBankDetails,
+  "/initialize/stripe",
+  protect,
+  requireRole("HIRER"),
+  initializeStripePayment,
+);
+router.post(
+  "/initialize/bank",
+  protect,
+  requireRole("HIRER"),
+  initializeBankTransfer,
+);
+router.post(
+  "/initialize/crypto",
+  protect,
+  requireRole("HIRER"),
+  initializeCryptoPayment,
 );
 
-// ── Webhooks (no auth — verified by signature) ────────────────────────
-router.post("/webhook", webhook);
-// Stripe needs raw body — must be registered with express.raw middleware in server.js
+// ── Verify after redirect ─────────────────────────────────────────────────────
+// ?gateway=stripe&session_id=xxx  OR  ?reference=xxx  (Paystack)
+router.get("/verify", protect, verifyPayment);
+
+// PaystackVerify.jsx calls /verify/paystack — add as alias
+router.get("/verify/paystack", protect, verifyPayment);
+
+// ── Get payment for a booking ─────────────────────────────────────────────────
+router.get("/booking/:booking_id", protect, getPayment);
+
+// ── Webhooks — NO auth, verified by signature ─────────────────────────────────
+// Stripe webhook MUST receive raw body — register before express.json() in server.js
 router.post(
   "/webhook/stripe",
   express.raw({ type: "application/json" }),
   stripeWebhook,
 );
-
-// ── Admin ─────────────────────────────────────────────────────────────
-router.get("/pending", requireAuth, requireRole("admin"), listPendingPayments);
-router.post(
-  "/approve/:booking_id",
-  requireAuth,
-  requireRole("admin"),
-  adminApproveBooking,
-);
-router.post(
-  "/reject/:booking_id",
-  requireAuth,
-  requireRole("admin"),
-  adminRejectBooking,
-);
-router.patch(
-  "/bank-transfer/:payment_id",
-  requireAuth,
-  requireRole("admin"),
-  adminVerifyBankTransfer,
-);
-router.get("/payouts", requireAuth, requireRole("admin"), adminListPayouts);
-router.patch(
-  "/payouts/:payout_id/process",
-  requireAuth,
-  requireRole("admin"),
-  adminProcessPayout,
-);
-
-router.get(
-  "/bank-transfers",
-  requireAuth,
-  requireRole("admin"),
-  adminListBankTransfers,
-);
-router.get(
-  "/crypto",
-  requireAuth,
-  requireRole("admin"),
-  adminListCryptoPayments,
-);
+router.post("/webhook", paystackWebhook);
 
 export default router;
