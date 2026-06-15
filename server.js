@@ -33,7 +33,8 @@ import subscriptionsRoutes from "./src/routes/subscriptions.routes.js";
 import earningsRouter from "./src/routes/earnings.routes.js";
 import walletRouter from "./src/routes/wallet.routes.js";
 import cleanerTrainingRoutes from "./src/routes/cleanerTraining.routes.js";
-import housekeeperTrainingRoutes from "./src/routes/housekeeperTraining.routes.js"; // ADD THIS
+import housekeeperTrainingRoutes from "./src/routes/housekeeperTraining.routes.js";
+import caregiverTrainingRoutes from "./src/routes/caregiverTraining.routes.js";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -123,6 +124,7 @@ app.use("/api/earnings", earningsRouter);
 app.use("/api/wallet", walletRouter);
 app.use("/api/cleaner-training", cleanerTrainingRoutes);
 app.use("/api/housekeeper-training", housekeeperTrainingRoutes);
+app.use("/api/caregiver-training", caregiverTrainingRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
