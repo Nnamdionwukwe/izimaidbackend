@@ -32,7 +32,8 @@ import withdrawalsRoutes from "./src/routes/withdrawals.routes.js";
 import subscriptionsRoutes from "./src/routes/subscriptions.routes.js";
 import earningsRouter from "./src/routes/earnings.routes.js";
 import walletRouter from "./src/routes/wallet.routes.js";
-import cleanerTrainingRoutes from "./src/routes/cleanerTraining.routes.js"; // ADD THIS
+import cleanerTrainingRoutes from "./src/routes/cleanerTraining.routes.js";
+import housekeeperTrainingRoutes from "./src/routes/housekeeperTraining.routes.js"; // ADD THIS
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -120,7 +121,8 @@ app.use("/api/withdrawals", withdrawalsRoutes);
 app.use("/api/subscriptions", subscriptionsRoutes);
 app.use("/api/earnings", earningsRouter);
 app.use("/api/wallet", walletRouter);
-app.use("/api/cleaner-training", cleanerTrainingRoutes); // ADD THIS LINE
+app.use("/api/cleaner-training", cleanerTrainingRoutes);
+app.use("/api/housekeeper-training", housekeeperTrainingRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
