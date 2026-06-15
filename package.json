@@ -8,7 +8,11 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "dev": "node --env-file=.env --watch server.js",
-    "migrate": "node --env-file=.env db/migrate.js"
+    "migrate": "node --env-file=.env db/migrate.js",
+    "migrate:cleaner": "node run-migration.js",
+    "seed:cleaner": "node seeds/seed-cleaner-applications.js",
+    "seed:cleaner:dry": "node seeds/seed-cleaner-applications.js --dry-run",
+    "seed:cleaner:clear": "node seeds/seed-cleaner-applications.js --clear"
   },
   "keywords": [],
   "author": "",

@@ -1,3 +1,4 @@
+// server.js (updated with Cleaner Training routes)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -31,6 +32,7 @@ import withdrawalsRoutes from "./src/routes/withdrawals.routes.js";
 import subscriptionsRoutes from "./src/routes/subscriptions.routes.js";
 import earningsRouter from "./src/routes/earnings.routes.js";
 import walletRouter from "./src/routes/wallet.routes.js";
+import cleanerTrainingRoutes from "./src/routes/cleanerTraining.routes.js"; // ADD THIS
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -72,14 +74,6 @@ app.use(
     credentials: true,
   }),
 );
-
-// sendEmail({
-//   to: process.env.SMTP_USER,
-//   subject: "✅ Mailer startup test",
-//   html: "<p>Backend mailer is working correctly.</p>",
-// })
-//   .then((r) => console.log("[startup] Mailer test:", r))
-//   .catch((e) => console.error("[startup] ✗ Mailer BROKEN:", e.message));
 
 // ── Stripe raw-body webhooks MUST come BEFORE express.json() ──────────
 app.post(
@@ -126,6 +120,7 @@ app.use("/api/withdrawals", withdrawalsRoutes);
 app.use("/api/subscriptions", subscriptionsRoutes);
 app.use("/api/earnings", earningsRouter);
 app.use("/api/wallet", walletRouter);
+app.use("/api/cleaner-training", cleanerTrainingRoutes); // ADD THIS LINE
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
@@ -176,7 +171,10 @@ app.listen(PORT, () => {
   console.log(`✓ Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`✓ CORS origins: ${allowedOrigins.join(", ")}`);
   console.log(`\n📍 API base: http://localhost:${PORT}/api`);
-  console.log(`❤️  Health:   http://localhost:${PORT}/health\n`);
+  console.log(`❤️  Health:   http://localhost:${PORT}/health`);
+  console.log(
+    `🧹 Cleaner Training: http://localhost:${PORT}/api/cleaner-training`,
+  );
 });
 
 export { pool, redis };
