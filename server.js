@@ -1,4 +1,4 @@
-// server.js (updated with Cleaner Training routes)
+// server.js (updated with Foundation routes and webhook)
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -13,6 +13,7 @@ import redis from "./src/config/redis.js";
 // which must be registered before express.json()
 import { stripeWebhook } from "./src/controllers/payments.js";
 import { stripeSubscriptionWebhook } from "./src/controllers/subscriptions.controller.js";
+import { webhook as foundationWebhook } from "./src/controllers/foundation.controller.js";
 
 // ── Route imports ─────────────────────────────────────────────────────
 import authRoutes from "./src/routes/auth.js";
@@ -38,6 +39,7 @@ import caregiverTrainingRoutes from "./src/routes/caregiverTraining.routes.js";
 import domesticCertificationRoutes from "./src/routes/domesticCertification.routes.js";
 import contactRoutes from "./src/routes/contact.routes.js";
 import maidApplicationRoutes from "./src/routes/maidApplication.routes.js";
+import foundationRoutes from "./src/routes/foundation.routes.js";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -93,6 +95,13 @@ app.post(
   stripeSubscriptionWebhook,
 );
 
+// ── Foundation Paystack Webhook ──────────────────────────────────────
+app.post(
+  "/api/foundation/webhook/paystack",
+  express.raw({ type: "application/json" }),
+  foundationWebhook,
+);
+
 // ── Body parsers ──────────────────────────────────────────────────────
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -131,6 +140,7 @@ app.use("/api/caregiver-training", caregiverTrainingRoutes);
 app.use("/api/domestic-certification", domesticCertificationRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/maid-application", maidApplicationRoutes);
+app.use("/api/foundation", foundationRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
@@ -184,6 +194,23 @@ app.listen(PORT, () => {
   console.log(`❤️  Health:   http://localhost:${PORT}/health`);
   console.log(
     `🧹 Cleaner Training: http://localhost:${PORT}/api/cleaner-training`,
+  );
+  console.log(
+    `🏠 Housekeeper Training: http://localhost:${PORT}/api/housekeeper-training`,
+  );
+  console.log(
+    `👶 Caregiver Training: http://localhost:${PORT}/api/caregiver-training`,
+  );
+  console.log(
+    `📋 Domestic Certification: http://localhost:${PORT}/api/domestic-certification`,
+  );
+  console.log(`📧 Contact: http://localhost:${PORT}/api/contact`);
+  console.log(
+    `👩‍💼 Maid Application: http://localhost:${PORT}/api/maid-application`,
+  );
+  console.log(`💚 Foundation: http://localhost:${PORT}/api/foundation`);
+  console.log(
+    `💚 Foundation Webhook: http://localhost:${PORT}/api/foundation/webhook/paystack`,
   );
 });
 
