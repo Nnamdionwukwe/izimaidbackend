@@ -36,6 +36,7 @@ import cleanerTrainingRoutes from "./src/routes/cleanerTraining.routes.js";
 import housekeeperTrainingRoutes from "./src/routes/housekeeperTraining.routes.js";
 import caregiverTrainingRoutes from "./src/routes/caregiverTraining.routes.js";
 import domesticCertificationRoutes from "./src/routes/domesticCertification.routes.js";
+import contactRoutes from "./src/routes/contact.routes.js";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -127,6 +128,7 @@ app.use("/api/cleaner-training", cleanerTrainingRoutes);
 app.use("/api/housekeeper-training", housekeeperTrainingRoutes);
 app.use("/api/caregiver-training", caregiverTrainingRoutes);
 app.use("/api/domestic-certification", domesticCertificationRoutes);
+app.use("/api/contact", contactRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
