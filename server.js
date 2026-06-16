@@ -144,7 +144,7 @@ app.use("/api/contact", contactRoutes);
 app.use("/api/maid-application", maidApplicationRoutes);
 app.use("/api/foundation", foundationRoutes);
 app.use("/api/gift-certificates", giftCertificateRoutes);
-app.use("/api/shelter-applications", shelterRoutes);
+app.use("/api/shelter", shelterRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
