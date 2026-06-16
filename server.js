@@ -40,6 +40,7 @@ import domesticCertificationRoutes from "./src/routes/domesticCertification.rout
 import contactRoutes from "./src/routes/contact.routes.js";
 import maidApplicationRoutes from "./src/routes/maidApplication.routes.js";
 import foundationRoutes from "./src/routes/foundation.routes.js";
+import giftCertificateRoutes from "./src/routes/giftCertificate.routes.js";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -141,6 +142,7 @@ app.use("/api/domestic-certification", domesticCertificationRoutes);
 app.use("/api/contact", contactRoutes);
 app.use("/api/maid-application", maidApplicationRoutes);
 app.use("/api/foundation", foundationRoutes);
+app.use("/api/gift-certificates", giftCertificateRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
