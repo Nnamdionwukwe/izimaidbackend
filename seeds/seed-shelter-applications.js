@@ -1,0 +1,373 @@
+// seeds/seed-shelter-applications.js
+import pg from "pg";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const db = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl:
+    process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : false,
+});
+
+const CITIES = ["Abuja", "Lagos"];
+const SUPPORT_TYPES = [
+  "Shelter cleaning support",
+  "Youth / children's home cleaning",
+  "Elderly care facility cleaning",
+  "Employment placement referral",
+  "Transitional housing clean",
+  "Individual family referral",
+  "General partnership enquiry",
+];
+const STATUSES = ["pending", "reviewed", "approved", "rejected", "active"];
+
+const ORGANISATION_NAMES = [
+  "Grace Women's Shelter",
+  "Hope Rehabilitation Centre",
+  "Lagos Youth Home",
+  "Abuja Family Support Network",
+  "Safe Haven Women's Refuge",
+  "Community Health Initiative",
+  "Elderly Care Foundation",
+  "Transitional Housing Project",
+  "Welfare Support Agency",
+  "Helping Hands NGO",
+  "Dignity Women's Shelter",
+  "Youth Empowerment Centre",
+  "Care for the Elderly",
+  "New Beginnings Shelter",
+  "Community Welfare Organisation",
+];
+
+const CONTACT_NAMES = [
+  "Sister Mary Thomas",
+  "Director Balogun",
+  "Coordinator Amaka",
+  "Dr. Adebayo Ogunlesi",
+  "Mrs. Grace Okonkwo",
+  "Mr. Emeka Okafor",
+  "Pastor James Adeyemi",
+  "Ms. Fatima Bello",
+  "Chief Ogunlade",
+  "Mrs. Ngozi Eze",
+];
+
+const ORGANISATION_TYPES = [
+  "Women's shelter",
+  "Youth / children's home",
+  "Elderly care facility",
+  "Community health centre",
+  "NGO / welfare agency",
+  "Government welfare body",
+  "Transitional housing project",
+  "Other",
+];
+
+const FIRST_NAMES = [
+  "Mary",
+  "John",
+  "Grace",
+  "Emeka",
+  "Fatima",
+  "James",
+  "Ngozi",
+  "Adebayo",
+  "Chidi",
+  "Yetunde",
+  "Olumide",
+  "Aisha",
+];
+
+const LAST_NAMES = [
+  "Thomas",
+  "Balogun",
+  "Okonkwo",
+  "Okafor",
+  "Bello",
+  "Adeyemi",
+  "Eze",
+  "Ogunlesi",
+  "Ibrahim",
+  "Lawal",
+  "Ogunlade",
+  "Adepoju",
+];
+
+const MESSAGES = [
+  "We run a shelter for women and children fleeing domestic violence. We currently have 25 residents and desperately need cleaning support.",
+  "Our youth rehabilitation centre houses 40 young people aged 13-18. We need regular cleaning services to maintain a healthy environment.",
+  "We are an NGO working with vulnerable families in Lagos. We would like to refer families for cleaning support and employment opportunities.",
+  "Our transitional housing project helps women move from shelters into independent living. We need deep cleaning for new homes.",
+  "We operate a community health centre in Abuja and need cleaning services for our facility.",
+  "We are a government welfare agency looking to partner with Deusizi for cleaning support and employment pathways.",
+  "Our elderly care facility has 30 residents and we need regular cleaning to maintain hygiene standards.",
+  "We run a youth empowerment programme and would like to refer young women for cleaning training and employment.",
+];
+
+const RESIDENT_COUNTS = ["10-25", "25-50", "50-100", "100+", "5-10", "15-30"];
+
+function getRandomDate(startDate, endDate) {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  const randomTime =
+    start.getTime() + Math.random() * (end.getTime() - start.getTime());
+  return new Date(randomTime);
+}
+
+function getRandomItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function getRandomPhone() {
+  return `080${Math.floor(Math.random() * 10000000)
+    .toString()
+    .padStart(7, "0")}`;
+}
+
+function getRandomEmail(firstName, lastName) {
+  const domains = [
+    "shelter.org",
+    "ngo.org",
+    "welfare.gov",
+    "community.org",
+    "care.org",
+  ];
+  return `${firstName.toLowerCase()}.${lastName.toLowerCase()}${Math.floor(Math.random() * 100)}@${getRandomItem(domains)}`;
+}
+
+async function checkTableExists() {
+  const client = await db.connect();
+  try {
+    const { rows } = await client.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_name = 'shelter_applications'
+      );
+    `);
+    return rows[0].exists;
+  } finally {
+    client.release();
+  }
+}
+
+async function seedShelterApplications() {
+  console.log("🌱 Seeding shelter applications...");
+
+  const tableExists = await checkTableExists();
+  if (!tableExists) {
+    console.error("❌ Error: shelter_applications table does not exist!");
+    console.log("\n📝 Please run the migration first:");
+    console.log("   node scripts/run-shelter-migration.js\n");
+    process.exit(1);
+  }
+
+  const isDryRun = process.argv.includes("--dry-run");
+  const shouldClear = process.argv.includes("--clear");
+  const numApplications =
+    parseInt(
+      process.argv.find((arg) => arg.includes("--count="))?.split("=")[1],
+    ) || 50;
+
+  console.log(`Mode: ${isDryRun ? "DRY RUN" : "COMMIT"}`);
+  console.log(`Clear existing: ${shouldClear ? "YES" : "NO"}`);
+  console.log(`Number of applications: ${numApplications}`);
+
+  const applications = [];
+
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - 6);
+
+  console.log(`\n📝 Generating ${numApplications} applications...`);
+
+  for (let i = 0; i < numApplications; i++) {
+    const orgName = getRandomItem(ORGANISATION_NAMES);
+    const contactName = getRandomItem(CONTACT_NAMES);
+    const firstName = getRandomItem(FIRST_NAMES);
+    const lastName = getRandomItem(LAST_NAMES);
+    const email = getRandomEmail(firstName, lastName);
+    const phone = getRandomPhone();
+    const city = getRandomItem(CITIES);
+    const orgType = getRandomItem(ORGANISATION_TYPES);
+    const supportType = getRandomItem(SUPPORT_TYPES);
+    const residents =
+      Math.random() > 0.3 ? getRandomItem(RESIDENT_COUNTS) : null;
+    const message = getRandomItem(MESSAGES);
+
+    let status;
+    const randomWeight = Math.random();
+    if (randomWeight < 0.35) status = "pending";
+    else if (randomWeight < 0.55) status = "reviewed";
+    else if (randomWeight < 0.75) status = "approved";
+    else if (randomWeight < 0.9) status = "active";
+    else status = "rejected";
+
+    const createdDate = getRandomDate(startDate, endDate);
+    const referenceNumber = `SHL-${createdDate.getTime().toString().slice(-6)}-${Math.floor(Math.random() * 1000)}`;
+
+    let adminNotes = null;
+    let reviewedAt = null;
+    let reviewedBy = null;
+
+    if (status !== "pending") {
+      const noteOptions = [
+        "Strong application, approved for partnership.",
+        "Follow up for more details about residents.",
+        "Schedule site visit for assessment.",
+        "Approved for monthly cleaning support.",
+        "Referred to employment placement team.",
+        "Approved for transitional housing support.",
+        "Needs more information about organisation structure.",
+        "Approved for referral network partnership.",
+      ];
+      adminNotes = getRandomItem(noteOptions);
+      reviewedAt = new Date(
+        createdDate.getTime() + Math.random() * 7 * 24 * 60 * 60 * 1000,
+      );
+      reviewedBy = `admin_${Math.floor(Math.random() * 5) + 1}`;
+    }
+
+    applications.push({
+      organisation_name: orgName,
+      contact_name: contactName,
+      email,
+      phone,
+      city,
+      organisation_type: orgType,
+      support_type: supportType,
+      resident_count: residents,
+      message,
+      status,
+      admin_notes: adminNotes,
+      reviewed_at: reviewedAt,
+      reviewed_by: reviewedBy,
+      reference_number: referenceNumber,
+      created_at: createdDate,
+      updated_at: createdDate,
+    });
+  }
+
+  console.log(`✅ Generated ${applications.length} applications`);
+
+  if (isDryRun) {
+    console.log("\n📋 Sample of generated applications (first 10):");
+    applications.slice(0, 10).forEach((app, i) => {
+      console.log(
+        `${(i + 1).toString().padEnd(3)} ${app.organisation_name.padEnd(30)} | ${app.contact_name.padEnd(20)} | ${app.city.padEnd(10)} | ${app.support_type.substring(0, 20)} | ${app.status}`,
+      );
+    });
+
+    const statusCount = {};
+    applications.forEach((app) => {
+      statusCount[app.status] = (statusCount[app.status] || 0) + 1;
+    });
+    console.log("\n📊 Expected distribution:");
+    Object.entries(statusCount).forEach(([status, count]) => {
+      console.log(
+        `   ${status.padEnd(10)}: ${count} (${Math.round((count / applications.length) * 100)}%)`,
+      );
+    });
+
+    console.log(
+      "\n✨ Dry run completed. Run without --dry-run to seed the database.",
+    );
+    await db.end();
+    return;
+  }
+
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    if (shouldClear) {
+      console.log("🧹 Clearing existing applications...");
+      const { rowCount } = await client.query(
+        "DELETE FROM shelter_applications",
+      );
+      console.log(`   Removed ${rowCount} existing applications`);
+    }
+
+    let inserted = 0;
+    let failed = 0;
+
+    for (const app of applications) {
+      const query = `
+        INSERT INTO shelter_applications (
+          organisation_name, contact_name, email, phone, city,
+          organisation_type, support_type, resident_count, message,
+          status, admin_notes, reviewed_at, reviewed_by,
+          reference_number, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      `;
+
+      const values = [
+        app.organisation_name,
+        app.contact_name,
+        app.email,
+        app.phone,
+        app.city,
+        app.organisation_type,
+        app.support_type,
+        app.resident_count,
+        app.message,
+        app.status,
+        app.admin_notes,
+        app.reviewed_at,
+        app.reviewed_by,
+        app.reference_number,
+        app.created_at,
+        app.updated_at,
+      ];
+
+      try {
+        await client.query(query, values);
+        inserted++;
+        if (inserted % 20 === 0) {
+          console.log(
+            `📝 Inserted ${inserted}/${applications.length} applications...`,
+          );
+        }
+      } catch (err) {
+        failed++;
+        console.error(
+          `❌ Failed to insert application: ${app.email}`,
+          err.message,
+        );
+        throw err;
+      }
+    }
+
+    await client.query("COMMIT");
+    console.log(`\n✅ Successfully seeded ${inserted} shelter applications!`);
+    if (failed > 0) {
+      console.log(`⚠️  Failed to insert ${failed} applications`);
+    }
+
+    const { rows: stats } = await client.query(`
+      SELECT status, COUNT(*) as count 
+      FROM shelter_applications 
+      GROUP BY status 
+      ORDER BY count DESC
+    `);
+
+    if (stats.length > 0) {
+      console.log("\n📊 Summary by status:");
+      stats.forEach((stat) => {
+        const percentage = Math.round((stat.count / inserted) * 100);
+        console.log(
+          `   ${stat.status.padEnd(10)}: ${stat.count} (${percentage}%)`,
+        );
+      });
+    }
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("❌ Error seeding applications:", error);
+  } finally {
+    client.release();
+    await db.end();
+  }
+}
+
+seedShelterApplications().catch(console.error);
