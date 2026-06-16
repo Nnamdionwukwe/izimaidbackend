@@ -193,8 +193,8 @@ export const verifyCertificatePayment = async (req, res) => {
 
     const data = paystackRes.data;
 
-    // Find the certificate by purchase reference
-    const { rows } = await pool.query(
+    // Find the certificate by purchase reference using req.db
+    const { rows } = await req.db.query(
       `SELECT * FROM gift_certificates WHERE purchase_reference = $1`,
       [reference],
     );
