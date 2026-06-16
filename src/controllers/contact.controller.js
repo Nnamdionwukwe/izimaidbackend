@@ -156,6 +156,7 @@ export const getMessage = async (req, res) => {
   }
 };
 
+// src/controllers/contact.controller.js
 export const updateMessageStatus = async (req, res) => {
   const { id } = req.params;
   const { status, notes } = req.body;
@@ -175,11 +176,16 @@ export const updateMessageStatus = async (req, res) => {
   }
 
   try {
+    // Ensure status is a string
+    const statusStr = String(status);
+    const notesStr = notes ? String(notes) : null;
+    const userId = req.user?.id || null;
+
     const message = await ContactMessage.updateStatus(
       id,
-      status,
-      notes,
-      req.user?.id,
+      statusStr,
+      notesStr,
+      userId,
     );
 
     if (!message) {

@@ -129,26 +129,31 @@ class ContactMessage {
   }
 
   static async updateStatus(id, status, adminNotes = null, repliedBy = null) {
+    // Explicitly cast status to text to avoid type mismatch
+    const statusValue = String(status);
+
     const query = `
       UPDATE contact_messages 
-      SET status = $1, 
+      SET status = $1::text, 
           admin_notes = COALESCE($2, admin_notes),
-          replied_at = CASE WHEN $1 IN ('replied', 'resolved') THEN CURRENT_TIMESTAMP ELSE replied_at END,
+          replied_at = CASE WHEN $1::text IN ('replied', 'resolved') THEN CURRENT_TIMESTAMP ELSE replied_at END,
           replied_by = COALESCE($3, replied_by),
           updated_at = CURRENT_TIMESTAMP
       WHERE id = $4
       RETURNING *
     `;
 
-    // Handle UUID or object
+    // Handle UUID or object for replied_by
     let replierId = repliedBy;
-    if (repliedBy && typeof repliedBy === "object" && repliedBy.id) {
-      replierId = repliedBy.id;
+    if (replierId && typeof replierId === "object" && replierId.id) {
+      replierId = replierId.id;
     }
+    // If it's a UUID string, keep it as is
+    // If it's null or undefined, pass null
 
     try {
       const { rows } = await pool.query(query, [
-        status,
+        statusValue,
         adminNotes,
         replierId,
         id,
