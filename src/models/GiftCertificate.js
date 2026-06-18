@@ -17,6 +17,7 @@ class GiftCertificate {
       fromName,
       recipientName,
       recipientEmail,
+      recipientPhone,
       amount,
       message,
       deliveryDate,
@@ -32,10 +33,10 @@ class GiftCertificate {
 
     const query = `
       INSERT INTO gift_certificates (
-        certificate_code, from_name, recipient_name, recipient_email,
+        certificate_code, from_name, recipient_name, recipient_email, recipient_phone,
         amount, message, delivery_date, occasion, purchase_reference,
         payment_method, transaction_id, expires_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *
     `;
 
@@ -44,6 +45,7 @@ class GiftCertificate {
       fromName,
       recipientName,
       recipientEmail,
+      recipientPhone || null,
       amount,
       message || null,
       deliveryDate || null,
@@ -70,7 +72,7 @@ class GiftCertificate {
     let query = `
       SELECT 
         id, certificate_code, amount, from_name, recipient_name,
-        recipient_email, message, delivery_date, occasion, status,
+        recipient_email, recipient_phone, message, delivery_date, occasion, status,
         purchase_reference, payment_method, transaction_id,
         redeemed_at, redeemed_by, booking_id, expires_at,
         admin_notes, created_at, updated_at
@@ -130,7 +132,7 @@ class GiftCertificate {
     const query = `
       SELECT 
         id, certificate_code, amount, from_name, recipient_name,
-        recipient_email, message, delivery_date, occasion, status,
+        recipient_email, recipient_phone, message, delivery_date, occasion, status,
         purchase_reference, payment_method, transaction_id,
         redeemed_at, redeemed_by, booking_id, expires_at,
         admin_notes, created_at, updated_at

@@ -1,4 +1,4 @@
-// seeds/seed-gift-certificates.js
+// seeds/seed-gift-certificates.js - Updated with recipient_phone
 import pg from "pg";
 import dotenv from "dotenv";
 
@@ -108,6 +108,13 @@ function generatePurchaseReference() {
   return `GIFT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10000)}`;
 }
 
+function getRandomPhone() {
+  const prefixes = ["080", "081", "090", "091", "070"];
+  return `${getRandomItem(prefixes)}${Math.floor(Math.random() * 10000000)
+    .toString()
+    .padStart(7, "0")}`;
+}
+
 async function checkTableExists() {
   const client = await db.connect();
   try {
@@ -124,7 +131,7 @@ async function checkTableExists() {
 }
 
 async function seedGiftCertificates() {
-  console.log("🌱 Seeding gift certificates...");
+  console.log("🌱 Seeding gift certificates with phone numbers...");
 
   const tableExists = await checkTableExists();
   if (!tableExists) {
@@ -162,6 +169,7 @@ async function seedGiftCertificates() {
     const recipientLastName = getRandomItem(LAST_NAMES);
     const recipientName = `${recipientFirstName} ${recipientLastName}`;
     const recipientEmail = `${recipientFirstName.toLowerCase()}.${recipientLastName.toLowerCase()}${Math.floor(Math.random() * 100)}@example.com`;
+    const recipientPhone = getRandomPhone();
 
     const amount = getRandomAmount();
     const occasion = getRandomItem(OCCASIONS);
@@ -212,6 +220,7 @@ async function seedGiftCertificates() {
       from_name: fromName,
       recipient_name: recipientName,
       recipient_email: recipientEmail,
+      recipient_phone: recipientPhone,
       message: message,
       delivery_date: createdDate,
       occasion,
@@ -235,7 +244,7 @@ async function seedGiftCertificates() {
     console.log("\n📋 Sample of generated certificates (first 10):");
     certificates.slice(0, 10).forEach((cert, i) => {
       console.log(
-        `${(i + 1).toString().padEnd(3)} ${cert.certificate_code.padEnd(18)} | ${cert.from_name.padEnd(25)} → ${cert.recipient_name.padEnd(25)} | ₦${cert.amount.toLocaleString().padEnd(10)} | ${cert.status}`,
+        `${(i + 1).toString().padEnd(3)} ${cert.certificate_code.padEnd(18)} | ${cert.from_name.padEnd(20)} → ${cert.recipient_name.padEnd(20)} | 📱${cert.recipient_phone} | ₦${cert.amount.toLocaleString().padEnd(10)} | ${cert.status}`,
       );
     });
 
@@ -282,11 +291,11 @@ async function seedGiftCertificates() {
       const query = `
         INSERT INTO gift_certificates (
           certificate_code, amount, from_name, recipient_name,
-          recipient_email, message, delivery_date, occasion,
+          recipient_email, recipient_phone, message, delivery_date, occasion,
           status, purchase_reference, payment_method, transaction_id,
           redeemed_at, redeemed_by, booking_id, expires_at,
           admin_notes, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
       `;
 
       const values = [
@@ -295,6 +304,7 @@ async function seedGiftCertificates() {
         cert.from_name,
         cert.recipient_name,
         cert.recipient_email,
+        cert.recipient_phone,
         cert.message,
         cert.delivery_date,
         cert.occasion,

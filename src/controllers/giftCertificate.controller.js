@@ -39,7 +39,7 @@ const VALID_OCCASIONS = [
 // ─────────────────────────────────────────────────────────────
 
 export const createCertificate = async (req, res) => {
-  const { from, to, email, date, message, amount, occasion } = req.body;
+  const { from, to, email, phone, date, message, amount, occasion } = req.body;
 
   // ─── Validation ───────────────────────────────────────────
   const missing = [];
@@ -81,6 +81,17 @@ export const createCertificate = async (req, res) => {
     });
   }
 
+  // Phone validation (if provided)
+  if (phone) {
+    const phoneRegex = /^[\+]?[0-9]{10,15}$/;
+    if (!phoneRegex.test(phone.replace(/\s/g, ""))) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid phone number format",
+      });
+    }
+  }
+
   try {
     // Generate purchase reference
     const purchaseReference = `GIFT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 10000)}`;
@@ -90,6 +101,7 @@ export const createCertificate = async (req, res) => {
       fromName: from,
       recipientName: to,
       recipientEmail: email,
+      recipientPhone: phone || null,
       amount: amount,
       message: message || null,
       deliveryDate: date || null,
@@ -112,6 +124,7 @@ export const createCertificate = async (req, res) => {
           from_name: from,
           recipient_name: to,
           recipient_email: email,
+          recipient_phone: phone || null,
           certificate_id: certificate.id,
           type: "gift_certificate",
         },
@@ -147,6 +160,7 @@ export const createCertificate = async (req, res) => {
         from: certificate.from_name,
         to: certificate.recipient_name,
         email: certificate.recipient_email,
+        phone: certificate.recipient_phone,
         status: certificate.status,
         expiresAt: certificate.expires_at,
       },
@@ -226,6 +240,8 @@ export const verifyCertificatePayment = async (req, res) => {
           amount: certificate.amount,
           from: certificate.from_name,
           to: certificate.recipient_name,
+          email: certificate.recipient_email,
+          phone: certificate.recipient_phone,
           status: "active",
           expiresAt: certificate.expires_at,
         },
@@ -330,6 +346,9 @@ export const redeemCertificate = async (req, res) => {
         code: redeemed.certificate_code,
         amount: redeemed.amount,
         from: redeemed.from_name,
+        to: redeemed.recipient_name,
+        email: redeemed.recipient_email,
+        phone: redeemed.recipient_phone,
         expiresAt: redeemed.expires_at,
       },
     });
@@ -375,6 +394,8 @@ export const verifyCertificate = async (req, res) => {
         amount: certificate.amount,
         from: certificate.from_name,
         to: certificate.recipient_name,
+        email: certificate.recipient_email,
+        phone: certificate.recipient_phone,
         status: certificate.status,
         expiresAt: certificate.expires_at,
         isValid: isValid,
