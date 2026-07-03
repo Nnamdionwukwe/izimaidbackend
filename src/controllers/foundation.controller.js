@@ -1,21 +1,20 @@
-// src/controllers/foundation.controller.js
 import FoundationDonation from "../models/FoundationDonation.js";
-import crypto from "crypto";
 
-// Validation options
+// ── Flutterwave configuration ──────────────────────────────────────────
+const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
+const FLW_SECRET_HASH = process.env.FLW_SECRET_HASH;
+const FLW_BASE = "https://api.flutterwave.com/v3";
+
+// ── Validation constants ──────────────────────────────────────────────
 const VALID_STATUSES = ["pending", "completed", "failed", "refunded"];
 const VALID_DONATION_TYPES = ["once", "monthly"];
 
-// Paystack configuration
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-const PAYSTACK_BASE = "https://api.paystack.co";
-
-// ── Paystack Request Helper ─────────────────────────────────────────────
-async function paystackRequest(method, path, body) {
-  const res = await fetch(`${PAYSTACK_BASE}${path}`, {
+// ── Flutterwave Request Helper ────────────────────────────────────────
+async function flutterwaveRequest(method, path, body) {
+  const res = await fetch(`${FLW_BASE}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      Authorization: `Bearer ${FLW_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -23,9 +22,9 @@ async function paystackRequest(method, path, body) {
   return res.json();
 }
 
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
 // PUBLIC ROUTES (No authentication required)
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
 
 export const createDonation = async (req, res) => {
   const {
@@ -37,7 +36,7 @@ export const createDonation = async (req, res) => {
     paymentMethod,
   } = req.body;
 
-  // ─── Validation ───────────────────────────────────────────
+  // ─── Validation ──────────────────────────────────────────────────
   const missing = [];
   if (!donorName) missing.push("donorName");
   if (!donorEmail) missing.push("donorEmail");
@@ -51,7 +50,6 @@ export const createDonation = async (req, res) => {
     });
   }
 
-  // Email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(donorEmail)) {
     return res.status(400).json({
@@ -60,7 +58,6 @@ export const createDonation = async (req, res) => {
     });
   }
 
-  // Amount validation
   if (amount < 100) {
     return res.status(400).json({
       success: false,
@@ -68,7 +65,6 @@ export const createDonation = async (req, res) => {
     });
   }
 
-  // Donation type validation
   if (donationType && !VALID_DONATION_TYPES.includes(donationType)) {
     return res.status(400).json({
       success: false,
@@ -88,53 +84,66 @@ export const createDonation = async (req, res) => {
       amount,
       donationType: donationType || "once",
       paymentReference,
-      paymentMethod: paymentMethod || "paystack",
+      paymentMethod: paymentMethod || "flutterwave",
     });
 
-    // ── Initialize Paystack Transaction ────────────────────
-    const paystackRes = await paystackRequest(
-      "POST",
-      "/transaction/initialize",
-      {
+    // ── Initialize Flutterwave Transaction ─────────────────────────
+    const payload = {
+      tx_ref: paymentReference,
+      amount: Number(amount),
+      currency: "NGN",
+      redirect_url: `${process.env.CLIENT_URL || "http://localhost:5173"}/foundation/verify?reference=${paymentReference}`,
+      customer: {
         email: donorEmail,
-        amount: Math.round(Number(amount) * 100), // Convert to kobo
-        currency: "NGN",
-        reference: paymentReference,
-        callback_url: `${process.env.CLIENT_URL || "http://localhost:5173"}/foundation/verify?reference=${paymentReference}`,
-        metadata: {
-          donor_name: donorName,
-          donor_email: donorEmail,
-          donation_id: donation.id,
-          donation_type: donationType || "once",
-        },
+        name: donorName,
       },
+      customizations: {
+        title: "Foundation Donation",
+        description: `Donation from ${donorName}`,
+        logo: process.env.LOGO_URL || "",
+      },
+      meta: {
+        donor_name: donorName,
+        donor_email: donorEmail,
+        donation_id: donation.id,
+        donation_type: donationType || "once",
+      },
+    };
+
+    const flutterwaveRes = await flutterwaveRequest(
+      "POST",
+      "/payments",
+      payload,
     );
 
-    if (!paystackRes.status) {
-      // If Paystack initialization fails, mark donation as failed
+    if (flutterwaveRes.status !== "success") {
       await FoundationDonation.updateStatus(
         donation.id,
         "failed",
-        `Paystack error: ${paystackRes.message}`,
+        `Flutterwave error: ${flutterwaveRes.message}`,
       );
 
       return res.status(502).json({
         success: false,
         error: "Payment gateway initialization failed",
-        details: paystackRes.message,
+        details: flutterwaveRes.message,
       });
     }
 
-    // Update donation with Paystack data
+    const { tx_ref, link, flw_ref, payment_id } = flutterwaveRes.data;
+
+    // Update donation with Flutterwave data
     await FoundationDonation.updateStatus(
       donation.id,
       "pending",
-      `Paystack initialized: ${paystackRes.data.reference}`,
+      `Flutterwave initialized: ${tx_ref}`,
+    );
+    await FoundationDonation.updateAdminNotes(
+      donation.id,
+      `Flutterwave payment ID: ${payment_id} | Reference: ${flw_ref}`,
     );
 
-    console.log(
-      `[foundation] Donation initiated: ${paymentReference} for ${donorEmail}`,
-    );
+    console.log(`[foundation] Donation initiated: ${tx_ref} for ${donorEmail}`);
 
     return res.status(201).json({
       success: true,
@@ -150,9 +159,9 @@ export const createDonation = async (req, res) => {
         createdAt: donation.created_at,
       },
       payment: {
-        authorization_url: paystackRes.data.authorization_url,
-        access_code: paystackRes.data.access_code,
-        reference: paystackRes.data.reference,
+        link,
+        tx_ref,
+        payment_id,
       },
     });
   } catch (error) {
@@ -164,7 +173,7 @@ export const createDonation = async (req, res) => {
   }
 };
 
-// ── Verify Paystack Payment ──────────────────────────────────────────────
+// ── Verify Flutterwave Payment ──────────────────────────────────────
 export const verifyDonationPayment = async (req, res) => {
   const { reference } = req.query;
 
@@ -176,26 +185,8 @@ export const verifyDonationPayment = async (req, res) => {
   }
 
   try {
-    // Verify with Paystack
-    const paystackRes = await paystackRequest(
-      "GET",
-      `/transaction/verify/${reference}`,
-    );
-
-    if (!paystackRes.status) {
-      return res.status(400).json({
-        success: false,
-        error: "Payment verification failed",
-        details: paystackRes.message,
-      });
-    }
-
-    const data = paystackRes.data;
-
     // Find the donation
-    const donations = await FoundationDonation.findByEmail(
-      data.customer?.email || "",
-    );
+    const donations = await FoundationDonation.findByEmail("");
     const donation = donations.find((d) => d.payment_reference === reference);
 
     if (!donation) {
@@ -205,19 +196,46 @@ export const verifyDonationPayment = async (req, res) => {
       });
     }
 
-    // Update donation status based on payment status
-    if (data.status === "success") {
+    // If already completed, return success
+    if (donation.status === "completed") {
+      return res.json({
+        success: true,
+        message: "Payment already verified",
+        donation: {
+          id: donation.id,
+          reference: donation.payment_reference,
+          amount: donation.amount,
+          status: donation.status,
+        },
+      });
+    }
+
+    // Verify with Flutterwave
+    const flutterwaveRes = await flutterwaveRequest(
+      "GET",
+      `/transactions/verify_by_reference?tx_ref=${reference}`,
+    );
+
+    if (flutterwaveRes.status !== "success") {
+      return res.status(400).json({
+        success: false,
+        error: "Payment verification failed",
+        details: flutterwaveRes.message,
+      });
+    }
+
+    const data = flutterwaveRes.data;
+
+    if (data.status === "successful") {
       await FoundationDonation.updateStatus(
         donation.id,
         "completed",
-        `Paystack verification: ${data.status}`,
+        `Flutterwave verification: ${data.status}`,
         new Date(),
       );
-
-      // Update with transaction details
       await FoundationDonation.updateAdminNotes(
         donation.id,
-        `Paystack transaction: ${data.reference} | Amount: ${data.amount / 100} ${data.currency}`,
+        `Flutterwave transaction: ${data.id} | Amount: ${data.amount} ${data.currency}`,
       );
 
       return res.json({
@@ -230,8 +248,8 @@ export const verifyDonationPayment = async (req, res) => {
           status: "completed",
         },
         transaction: {
-          reference: data.reference,
-          amount: data.amount / 100,
+          id: data.id,
+          amount: data.amount,
           currency: data.currency,
           status: data.status,
         },
@@ -240,7 +258,7 @@ export const verifyDonationPayment = async (req, res) => {
       await FoundationDonation.updateStatus(
         donation.id,
         "failed",
-        `Paystack verification failed: ${data.status}`,
+        `Flutterwave verification failed: ${data.status}`,
       );
 
       return res.status(400).json({
@@ -258,60 +276,62 @@ export const verifyDonationPayment = async (req, res) => {
   }
 };
 
-// ── Paystack Webhook ──────────────────────────────────────────────────────
+// ── Flutterwave Webhook ──────────────────────────────────────────────
 export const webhook = async (req, res) => {
-  const signature = req.headers["x-paystack-signature"];
-  const hash = crypto
-    .createHmac("sha512", PAYSTACK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest("hex");
-
-  if (hash !== signature) {
+  const signature = req.headers["verif-hash"];
+  if (!signature || signature !== FLW_SECRET_HASH) {
     return res.status(401).json({ error: "invalid signature" });
   }
 
   const { event, data } = req.body;
 
   try {
-    if (event === "charge.success") {
-      const reference = data.reference;
-
-      // Find donation by payment reference
-      const donations = await FoundationDonation.findByEmail(
-        data.customer?.email || "",
-      );
-      const donation = donations.find((d) => d.payment_reference === reference);
-
-      if (donation) {
-        await FoundationDonation.updateStatus(
-          donation.id,
-          "completed",
-          `Webhook: charge.success for ${reference}`,
-          new Date(),
-        );
-        console.log(
-          `[foundation] Webhook: Donation ${reference} marked as completed`,
-        );
-      }
+    // Only process charge.completed events
+    if (event !== "charge.completed") {
+      return res.sendStatus(200);
     }
 
-    if (event === "refund.processed") {
-      const reference = data.transaction_reference;
-      const donations = await FoundationDonation.findByEmail(
-        data.customer?.email || "",
-      );
-      const donation = donations.find((d) => d.payment_reference === reference);
+    const tx_ref = data.tx_ref;
+    const status = data.status;
 
-      if (donation) {
-        await FoundationDonation.updateStatus(
-          donation.id,
-          "refunded",
-          `Webhook: refund.processed for ${reference}`,
-        );
-        console.log(
-          `[foundation] Webhook: Donation ${reference} marked as refunded`,
-        );
-      }
+    // Find donation by payment reference
+    const donations = await FoundationDonation.findByEmail("");
+    const donation = donations.find((d) => d.payment_reference === tx_ref);
+
+    if (!donation) {
+      console.warn(`[foundation] Donation not found for tx_ref: ${tx_ref}`);
+      return res.sendStatus(200);
+    }
+
+    // Don't update if already completed
+    if (donation.status === "completed") {
+      return res.sendStatus(200);
+    }
+
+    if (status === "successful") {
+      await FoundationDonation.updateStatus(
+        donation.id,
+        "completed",
+        `Webhook: charge.completed for ${tx_ref}`,
+        new Date(),
+      );
+      await FoundationDonation.updateAdminNotes(
+        donation.id,
+        `Flutterwave transaction: ${data.id} | Amount: ${data.amount} ${data.currency}`,
+      );
+      console.log(
+        `[foundation] Webhook: Donation ${tx_ref} marked as completed`,
+      );
+    } else if (status === "cancelled") {
+      await FoundationDonation.updateStatus(
+        donation.id,
+        "failed",
+        `Webhook: payment cancelled for ${tx_ref}`,
+      );
+      console.log(`[foundation] Webhook: Donation ${tx_ref} cancelled`);
+    } else {
+      // Other statuses: pending, etc.
+      console.log(`[foundation] Webhook: Donation ${tx_ref} status: ${status}`);
     }
 
     return res.sendStatus(200);
@@ -321,9 +341,9 @@ export const webhook = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// ADMIN ROUTES (Authentication required)
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
+// ADMIN ROUTES (Authentication required) – unchanged
+// ──────────────────────────────────────────────────────────────────────
 
 export const listDonations = async (req, res) => {
   const { status, donationType, page = 1, limit = 50 } = req.query;

@@ -1,16 +1,15 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import express from "express";
-// REPLACE the entire import block — remove the duplicate getMaidEarnings:
 import {
-  initializePayment,
-  initializeStripePayment,
+  initializePayment, // Flutterwave
   initializeBankTransfer,
   confirmBankTransfer,
   initializeCryptoPayment,
+  confirmCryptoPayment, // 👈 NEW – user submits TX hash + proof
+  adminVerifyCryptoPayment, // 👈 NEW – admin verifies crypto payment
   verifyPayment,
-  webhook,
-  stripeWebhook,
+  flutterwaveWebhook,
   getPayment,
   getMaidEarnings,
   saveMaidBankDetails,
@@ -29,14 +28,14 @@ import {
 const router = Router();
 
 // ── Customer payments ─────────────────────────────────────────────────
-router.post("/initialize", requireAuth, initializePayment); // Paystack
-router.post("/initialize/stripe", requireAuth, initializeStripePayment); // Stripe
-router.post("/initialize/bank", requireAuth, initializeBankTransfer); // Bank transfer
-router.post("/confirm/bank", requireAuth, confirmBankTransfer); // Upload proof
-router.post("/initialize/crypto", requireAuth, initializeCryptoPayment); // Crypto
+router.post("/initialize", requireAuth, initializePayment); // Flutterwave
+router.post("/initialize/bank", requireAuth, initializeBankTransfer);
+router.post("/confirm/bank", requireAuth, confirmBankTransfer);
+router.post("/initialize/crypto", requireAuth, initializeCryptoPayment);
+router.post("/confirm/crypto", requireAuth, confirmCryptoPayment); // 👈 NEW
 router.get("/my", requireAuth, listCustomerPayments);
 
-router.get("/verify", requireAuth, verifyPayment); // ?gateway=paystack&reference=x OR ?gateway=stripe&session_id=x
+router.get("/verify", requireAuth, verifyPayment); // ?gateway=flutterwave&reference=x
 router.get("/booking/:booking_id", requireAuth, getPayment);
 
 // ── Maid ──────────────────────────────────────────────────────────────
@@ -47,7 +46,6 @@ router.get(
   requireRole("maid"),
   getMaidBankDetails,
 );
-// Add this line with your other maid routes:
 router.get("/maid/earnings", requireAuth, requireRole("maid"), getMaidEarnings);
 router.post(
   "/bank-details",
@@ -56,13 +54,11 @@ router.post(
   saveMaidBankDetails,
 );
 
-// ── Webhooks (no auth — verified by signature) ────────────────────────
-router.post("/webhook", webhook);
-// Stripe needs raw body — must be registered with express.raw middleware in server.js
+// ── Webhook (no auth – verified by signature) ──────────────────────
 router.post(
-  "/webhook/stripe",
+  "/webhook/flutterwave",
   express.raw({ type: "application/json" }),
-  stripeWebhook,
+  flutterwaveWebhook,
 );
 
 // ── Admin ─────────────────────────────────────────────────────────────
@@ -92,7 +88,6 @@ router.patch(
   requireRole("admin"),
   adminProcessPayout,
 );
-
 router.get(
   "/bank-transfers",
   requireAuth,
@@ -104,6 +99,12 @@ router.get(
   requireAuth,
   requireRole("admin"),
   adminListCryptoPayments,
+);
+router.patch(
+  "/crypto/:payment_id/verify", // 👈 NEW
+  requireAuth,
+  requireRole("admin"),
+  adminVerifyCryptoPayment,
 );
 
 export default router;

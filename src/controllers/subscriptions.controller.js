@@ -1,5 +1,3 @@
-// src/controllers/subscriptions.controller.js
-import Stripe from "stripe";
 import { notify } from "../utils/notify.js";
 import {
   sendSubscriptionConfirmationEmail,
@@ -11,16 +9,15 @@ import {
   sendProBadgeActivatedEmail,
 } from "../utils/mailer.js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
+const FLW_SECRET_HASH = process.env.FLW_SECRET_HASH;
+const FLW_BASE = "https://api.flutterwave.com/v3";
 
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-const PAYSTACK_BASE = "https://api.paystack.co";
-
-async function paystackRequest(method, path, body) {
-  const res = await fetch(`${PAYSTACK_BASE}${path}`, {
+async function flutterwaveRequest(method, path, body) {
+  const res = await fetch(`${FLW_BASE}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      Authorization: `Bearer ${FLW_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -30,7 +27,6 @@ async function paystackRequest(method, path, body) {
 
 // ── Helper: get plan by id or name ────────────────────────────────────
 async function getPlan(db, planIdOrName) {
-  // UUID pattern check
   const isUUID =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       planIdOrName,
@@ -101,7 +97,6 @@ function calcFinalPrice(basePrice, discount, discountType) {
 // ──────────────────────────────────────────────────────────────────────
 
 // GET /api/subscriptions/plans
-// REPLACE the getPlans function with:
 export const getPlans = async (req, res) => {
   const { role = "customer", currency = "NGN", interval } = req.query;
 
@@ -138,13 +133,13 @@ export const getPlans = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
 // GET /api/subscriptions/my
 export const getMySubscription = async (req, res) => {
   try {
     const sub = await getActiveSub(req.db, req.user.id);
 
     if (!sub) {
-      // Return free plan info
       const freePlan = await getPlan(req.db, "free");
       return res.json({
         subscription: null,
@@ -155,7 +150,6 @@ export const getMySubscription = async (req, res) => {
       });
     }
 
-    // Get invoices
     const { rows: invoices } = await req.db.query(
       `SELECT id, amount, currency, status, period_start, period_end, paid_at, created_at
        FROM subscription_invoices
@@ -194,16 +188,16 @@ export const validatePromo = async (req, res) => {
     valid: true,
     discount_type: type,
     discount_value: discount,
-    discount_percent: type === "percent" ? discount : 0, // ← ADD this
+    discount_percent: type === "percent" ? discount : 0,
     description: promo.description,
   });
 };
 
 // ──────────────────────────────────────────────────────────────────────
-//  SUBSCRIBE — PAYSTACK (Africa)
+//  SUBSCRIBE — FLUTTERWAVE (all currencies)
 // ──────────────────────────────────────────────────────────────────────
 
-export const subscribePaystack = async (req, res) => {
+export const subscribeFlutterwave = async (req, res) => {
   const { plan_id, currency = "NGN", promo_code } = req.body;
   if (!plan_id) return res.status(400).json({ error: "plan_id is required" });
 
@@ -211,7 +205,6 @@ export const subscribePaystack = async (req, res) => {
     const plan = await getPlan(req.db, plan_id);
     if (!plan) return res.status(404).json({ error: "plan not found" });
 
-    // Check no active subscription
     const existing = await getActiveSub(req.db, req.user.id);
     if (existing) {
       return res.status(409).json({
@@ -220,14 +213,11 @@ export const subscribePaystack = async (req, res) => {
       });
     }
 
-    // Get price for currency
     const basePrice = plan.prices[currency] || plan.prices["NGN"] || 0;
     if (basePrice === 0) {
-      // Free plan — activate directly
       return await activateFreePlan(req, res, plan);
     }
 
-    // Apply promo
     const {
       discount,
       type: discountType,
@@ -239,148 +229,72 @@ export const subscribePaystack = async (req, res) => {
 
     const finalPrice = calcFinalPrice(basePrice, discount, discountType);
 
-    // Get user email
     const { rows: userRows } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [req.user.id],
     );
     const user = userRows[0];
 
-    // Initialize Paystack transaction
+    // Flutterwave requires a recurring plan if interval is provided
+    // We'll create a one-time payment then set up a recurring plan via webhook
     const reference = `ds_sub_${req.user.id.slice(0, 8)}_${Date.now()}`;
-    const paystackRes = await paystackRequest(
-      "POST",
-      "/transaction/initialize",
-      {
-        email: user.email,
-        amount: Math.round(finalPrice * 100), // kobo
-        currency,
-        reference,
-        callback_url: `${process.env.CLIENT_URL}/subscription/verify?gateway=paystack`,
-        metadata: {
-          user_id: req.user.id,
-          plan_id: plan.id,
-          plan_name: plan.name,
-          currency,
-          promo_code: promo_code || null,
-        },
-        // For recurring — Paystack will create a subscription after first payment
-        plan: plan.paystack_plan_codes?.[currency] || undefined,
-      },
-    );
 
-    if (!paystackRes.status) {
-      return res.status(502).json({
-        error: "payment initialization failed",
-        details: paystackRes.message,
-      });
-    }
-
-    return res.json({
-      gateway: "paystack",
-      authorization_url: paystackRes.data.authorization_url,
-      access_code: paystackRes.data.access_code,
-      reference: paystackRes.data.reference,
+    const payload = {
+      tx_ref: reference,
       amount: finalPrice,
-      currency,
-      discount_applied:
-        discount > 0 ? { type: discountType, value: discount } : null,
-    });
-  } catch (err) {
-    console.error("[subscriptions/subscribePaystack]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
-
-// ──────────────────────────────────────────────────────────────────────
-//  SUBSCRIBE — STRIPE (Global)
-// ──────────────────────────────────────────────────────────────────────
-
-export const subscribeStripe = async (req, res) => {
-  const { plan_id, currency = "usd", promo_code } = req.body;
-  if (!plan_id) return res.status(400).json({ error: "plan_id is required" });
-
-  try {
-    const plan = await getPlan(req.db, plan_id);
-    if (!plan) return res.status(404).json({ error: "plan not found" });
-
-    const existing = await getActiveSub(req.db, req.user.id);
-    if (existing) {
-      return res.status(409).json({
-        error: "you already have an active subscription",
-        current_plan: existing.display_name,
-      });
-    }
-
-    const currencyUpper = currency.toUpperCase();
-    const basePrice = plan.prices[currencyUpper] || plan.prices["USD"] || 0;
-    if (basePrice === 0) return await activateFreePlan(req, res, plan);
-
-    const {
-      discount,
-      type: discountType,
-      promo,
-      error: promoErr,
-    } = await applyPromo(req.db, promo_code, plan.name, currencyUpper);
-    if (promo_code && promoErr)
-      return res.status(400).json({ error: promoErr });
-
-    const finalPrice = calcFinalPrice(basePrice, discount, discountType);
-
-    const { rows: userRows } = await req.db.query(
-      `SELECT name, email FROM users WHERE id = $1`,
-      [req.user.id],
-    );
-    const user = userRows[0];
-
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      payment_method_types: ["card"],
-      customer_email: user.email,
-      line_items: [
-        {
-          price_data: {
-            currency: currency.toLowerCase(),
-            unit_amount: Math.round(finalPrice * 100),
-            product_data: {
-              name: `${plan.display_name} — ${process.env.APP_NAME}`,
-              description: plan.description || "",
-            },
-            recurring: {
-              interval: plan.interval === "annual" ? "year" : "month",
-            },
-          },
-          quantity: 1,
-        },
-      ],
-      success_url: `${process.env.CLIENT_URL}/subscription/verify?gateway=stripe&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/pricing?cancelled=1`,
-      metadata: {
+      currency: currency,
+      redirect_url: `${process.env.CLIENT_URL}/subscription/verify?gateway=flutterwave`,
+      customer: {
+        email: user.email,
+        name: user.name,
+      },
+      customizations: {
+        title: `${plan.display_name} Subscription`,
+        description: `${plan.display_name} — ${plan.interval} plan`,
+        logo: process.env.LOGO_URL,
+      },
+      meta: {
         user_id: req.user.id,
         plan_id: plan.id,
         plan_name: plan.name,
-        currency: currencyUpper,
-        promo_code: promo_code || "",
+        currency,
+        promo_code: promo_code || null,
       },
-      // Trial period
-      ...(plan.trial_days > 0
-        ? {
-            subscription_data: {
-              trial_period_days: plan.trial_days,
-            },
-          }
-        : {}),
-    });
+    };
+
+    const flutterwaveRes = await flutterwaveRequest(
+      "POST",
+      "/payments",
+      payload,
+    );
+
+    if (flutterwaveRes.status !== "success") {
+      return res.status(502).json({
+        error: "Flutterwave initialization failed",
+        details: flutterwaveRes.message,
+      });
+    }
+
+    const { tx_ref, link, flw_ref, payment_id } = flutterwaveRes.data;
+
+    // Store pending subscription in payments table
+    await req.db.query(
+      `INSERT INTO payments
+         (booking_id, customer_id, amount, currency, gateway,
+          flutterwave_tx_ref, flutterwave_payment_id, status)
+       VALUES (NULL, $1, $2, $3, 'flutterwave', $4, $5, 'pending')
+       RETURNING id`,
+      [req.user.id, finalPrice, currency, tx_ref, payment_id],
+    );
 
     return res.json({
-      gateway: "stripe",
-      session_id: session.id,
-      url: session.url,
-      amount: finalPrice,
-      currency: currencyUpper,
+      gateway: "flutterwave",
+      link,
+      tx_ref,
+      payment_id,
     });
   } catch (err) {
-    console.error("[subscriptions/subscribeStripe]", err);
+    console.error("[subscriptions/subscribeFlutterwave]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
@@ -420,90 +334,82 @@ async function activateFreePlan(req, res, plan) {
 // ──────────────────────────────────────────────────────────────────────
 
 export const verifySubscriptionPayment = async (req, res) => {
-  const { gateway, reference, session_id } = req.query;
+  const { gateway, reference, transaction_id } = req.query;
 
   try {
-    let userId, planId, currency, promoCode, amount;
-
-    if (gateway === "stripe" && session_id) {
-      const session = await stripe.checkout.sessions.retrieve(session_id, {
-        expand: ["subscription"],
-      });
-
-      if (session.payment_status !== "paid" && session.status !== "complete") {
-        return res.status(402).json({ error: "payment not completed" });
-      }
-
-      userId = session.metadata.user_id;
-      planId = session.metadata.plan_id;
-      currency = session.metadata.currency;
-      promoCode = session.metadata.promo_code;
-      amount = session.amount_total / 100;
-
-      await activateSubscription(req.db, {
-        userId,
-        planId,
-        currency,
-        amount,
-        gateway: "stripe",
-        stripe_sub_id: session.subscription?.id,
-        stripe_cus_id: session.customer,
-        promoCode,
-        interval:
-          session.subscription?.items?.data[0]?.price?.recurring?.interval ||
-          "month",
-        trial_end: session.subscription?.trial_end
-          ? new Date(session.subscription.trial_end * 1000)
-          : null,
-      });
-    } else if (reference) {
-      const psRes = await paystackRequest(
-        "GET",
-        `/transaction/verify/${reference}`,
-      );
-      if (!psRes.status || psRes.data.status !== "success") {
-        return res.status(402).json({ error: "payment not verified" });
-      }
-
-      const meta = psRes.data.metadata;
-      userId = meta.user_id;
-      planId = meta.plan_id;
-      currency = meta.currency || "NGN";
-      promoCode = meta.promo_code;
-      amount = psRes.data.amount / 100;
-
-      // ← Fetch plan to get the correct interval instead of hardcoding "monthly"
-      const psyPlan = await getPlan(req.db, planId);
-
-      await activateSubscription(req.db, {
-        userId,
-        planId,
-        currency,
-        amount,
-        gateway: "paystack",
-        paystack_sub_code: psRes.data.plan_object?.subscription_code,
-        paystack_token: psRes.data.plan_object?.email_token,
-        promoCode,
-        interval: psyPlan?.interval || "monthly", // ← was hardcoded "monthly"
-      });
-    } else {
-      return res
-        .status(400)
-        .json({ error: "gateway and reference/session_id are required" });
+    if (gateway !== "flutterwave") {
+      return res.status(400).json({ error: "only flutterwave is supported" });
     }
 
-    // Fetch activated subscription
-    // In verifySubscriptionPayment, REPLACE the notify call after activateSubscription with:
+    // Flutterwave webhook should handle the activation, but we also provide
+    // a fallback verification endpoint.
+    const { rows } = await req.db.query(
+      `SELECT * FROM payments WHERE flutterwave_tx_ref = $1 AND status = 'pending'`,
+      [reference],
+    );
 
-    const sub = await getActiveSub(req.db, userId);
+    if (!rows.length) {
+      return res.status(404).json({ error: "payment not found" });
+    }
+
+    const payment = rows[0];
+
+    // Verify with Flutterwave
+    const verifyRes = await flutterwaveRequest(
+      "GET",
+      `/transactions/${payment.flutterwave_payment_id}/verify`,
+    );
+
+    if (
+      verifyRes.status !== "success" ||
+      verifyRes.data.status !== "successful"
+    ) {
+      return res.status(402).json({ error: "payment not successful" });
+    }
+
+    // Extract metadata from the original request (stored in notes)
+    const meta = payment.notes ? JSON.parse(payment.notes) : {};
+    const userId = meta.user_id || payment.customer_id;
+    const planId = meta.plan_id;
+
+    if (!userId || !planId) {
+      return res.status(400).json({ error: "missing subscription metadata" });
+    }
+
+    // Activate subscription
     const plan = await getPlan(req.db, planId);
+    if (!plan) return res.status(404).json({ error: "plan not found" });
+
+    await activateSubscription(req.db, {
+      userId,
+      planId: plan.id,
+      currency: payment.currency,
+      amount: payment.amount,
+      gateway: "flutterwave",
+      flutterwave_tx_ref: payment.flutterwave_tx_ref,
+      flutterwave_transaction_id: verifyRes.data.id,
+      promoCode: meta.promo_code,
+      interval: plan.interval,
+      trial_end:
+        plan.trial_days > 0
+          ? new Date(Date.now() + plan.trial_days * 86400000)
+          : null,
+    });
+
+    // Update payment status
+    await req.db.query(
+      `UPDATE payments SET status = 'success', paid_at = now() WHERE id = $1`,
+      [payment.id],
+    );
+
+    // Get subscription and send notifications
+    const sub = await getActiveSub(req.db, userId);
     const { rows: userRows } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [userId],
     );
     const user = userRows[0];
 
-    // ── In-app + email notification ──
     await notify(req.db, {
       userId,
       type: "payment_received",
@@ -520,12 +426,10 @@ export const verifySubscriptionPayment = async (req, res) => {
       sendMail: () => sendSubscriptionConfirmationEmail(user, plan, sub),
     });
 
-    // ── Pro badge email ──
     if (plan.name === "pro_badge" || plan.name?.includes("pro")) {
       sendProBadgeActivatedEmail(user).catch(console.error);
     }
 
-    // ADD trial ending check to verifySubscriptionPayment, after notify:
     if (sub.trial_end) {
       const daysToTrialEnd = Math.ceil(
         (new Date(sub.trial_end) - Date.now()) / 86400000,
@@ -535,11 +439,10 @@ export const verifySubscriptionPayment = async (req, res) => {
       }
     }
 
-    // Increment promo uses
-    if (promoCode) {
+    if (meta.promo_code) {
       await req.db.query(
         `UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = $1`,
-        [promoCode.toUpperCase()],
+        [meta.promo_code.toUpperCase()],
       );
     }
 
@@ -563,10 +466,8 @@ async function activateSubscription(
     currency,
     amount,
     gateway,
-    stripe_sub_id,
-    stripe_cus_id,
-    paystack_sub_code,
-    paystack_token,
+    flutterwave_tx_ref,
+    flutterwave_transaction_id,
     promoCode,
     interval,
     trial_end,
@@ -574,7 +475,7 @@ async function activateSubscription(
 ) {
   const plan = await getPlan(db, planId);
 
-  // Cancel any existing subscription first
+  // Cancel any existing subscription
   await db.query(
     `UPDATE subscriptions
      SET status = 'cancelled', cancelled_at = now(), cancel_at_period_end = false
@@ -583,21 +484,16 @@ async function activateSubscription(
   );
 
   const now = new Date();
-  // REPLACE this section (normalizedInterval declaration through expiry):
   const normalizedInterval =
     interval === "year"
       ? "annual"
       : interval === "month"
         ? "monthly"
-        : interval === "annual"
-          ? "annual"
-          : interval === "monthly"
-            ? "monthly"
-            : interval === "quarter"
-              ? "quarterly"
-              : "monthly";
+        : interval === "quarter"
+          ? "quarterly"
+          : "monthly";
 
-  const periodMonths = // ← this was missing, causing ReferenceError
+  const periodMonths =
     normalizedInterval === "annual"
       ? 12
       : normalizedInterval === "quarterly"
@@ -614,12 +510,11 @@ async function activateSubscription(
       user_id, plan_id, status, currency, amount, interval,
       current_period_start, current_period_end,
       trial_start, trial_end,
-      gateway, stripe_sub_id, stripe_customer_id,
-      paystack_sub_code, paystack_email_token,
+      gateway, flutterwave_tx_ref, flutterwave_transaction_id,
       promo_code, discount_percent, auto_renew
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-      $11,$12,$13,$14,$15,$16,$17,true
+      $11,$12,$13,$14,$15,true
     ) RETURNING *`,
     [
       userId,
@@ -633,10 +528,8 @@ async function activateSubscription(
       trial_end ? now : null,
       trial_end || null,
       gateway,
-      stripe_sub_id || null,
-      stripe_cus_id || null,
-      paystack_sub_code || null,
-      paystack_token || null,
+      flutterwave_tx_ref || null,
+      flutterwave_transaction_id || null,
       promoCode || null,
       0,
     ],
@@ -659,8 +552,6 @@ async function activateSubscription(
     [plan.name, plan.badge, userId],
   );
 
-  // Special: activate Pro badge for maids
-  // In activateSubscription, after the pro_badge check, ADD:
   if (plan.name === "pro_badge") {
     const { rows: maidRows } = await db.query(
       `SELECT name, email FROM users WHERE id = $1`,
@@ -688,7 +579,6 @@ export const cancelSubscription = async (req, res) => {
     const plan = await getPlan(req.db, sub.plan_id);
 
     if (immediate) {
-      // Cancel immediately
       await req.db.query(
         `UPDATE subscriptions
          SET status = 'cancelled', cancelled_at = now(),
@@ -701,7 +591,6 @@ export const cancelSubscription = async (req, res) => {
         [req.user.id],
       );
     } else {
-      // Cancel at end of period
       await req.db.query(
         `UPDATE subscriptions
          SET cancel_at_period_end = true, cancelled_at = now(),
@@ -711,33 +600,18 @@ export const cancelSubscription = async (req, res) => {
       );
     }
 
-    // Cancel on gateway
-    if (sub.stripe_sub_id) {
+    // Cancel on Flutterwave (if we have a transaction reference)
+    if (sub.flutterwave_transaction_id) {
       try {
-        if (immediate) {
-          await stripe.subscriptions.cancel(sub.stripe_sub_id);
-        } else {
-          await stripe.subscriptions.update(sub.stripe_sub_id, {
-            cancel_at_period_end: true,
-          });
-        }
+        // Flutterwave doesn't have a direct "cancel subscription" endpoint;
+        // we would need to use their recurring payment feature.
+        // For now, we just update the DB. The user will not be charged again.
+        // If we used Flutterwave's tokenization for recurring, we could disable it.
+        // We'll skip external cancellation since we only used one-time payment.
+        console.log("Flutterwave subscription cancellation not implemented");
       } catch (err) {
         console.error(
-          "[subscriptions/cancel] Stripe cancel failed:",
-          err.message,
-        );
-      }
-    }
-
-    if (sub.paystack_sub_code) {
-      try {
-        await paystackRequest("POST", `/subscription/disable`, {
-          code: sub.paystack_sub_code,
-          token: sub.paystack_email_token,
-        });
-      } catch (err) {
-        console.error(
-          "[subscriptions/cancel] Paystack cancel failed:",
+          "[subscriptions/cancel] Flutterwave cancel failed:",
           err.message,
         );
       }
@@ -764,7 +638,6 @@ export const cancelSubscription = async (req, res) => {
         }),
     });
 
-    // Add after the DB update in cancelSubscription:
     const { safeDel } = await import("../config/redis.js");
     await safeDel(`user:${req.user.id}`);
 
@@ -782,7 +655,7 @@ export const cancelSubscription = async (req, res) => {
 };
 
 // ──────────────────────────────────────────────────────────────────────
-//  PAUSE / RESUME
+//  PAUSE / RESUME (unchanged)
 // ──────────────────────────────────────────────────────────────────────
 
 export const pauseSubscription = async (req, res) => {
@@ -824,8 +697,6 @@ export const resumeSubscription = async (req, res) => {
       return res.status(404).json({ error: "no paused subscription" });
 
     const sub = subRows[0];
-
-    // Extend period by days paused
     const daysPaused = Math.ceil(
       (Date.now() - new Date(sub.paused_at).getTime()) / (1000 * 60 * 60 * 24),
     );
@@ -859,7 +730,7 @@ export const resumeSubscription = async (req, res) => {
 // ──────────────────────────────────────────────────────────────────────
 
 export const changePlan = async (req, res) => {
-  const { new_plan_id, promo_code, gateway = "paystack" } = req.body;
+  const { new_plan_id, promo_code } = req.body;
   if (!new_plan_id)
     return res.status(400).json({ error: "new_plan_id is required" });
 
@@ -872,10 +743,10 @@ export const changePlan = async (req, res) => {
       return res.status(409).json({ error: "already on this plan" });
     }
 
-    const currency = gateway === "stripe" ? "USD" : "NGN";
+    const currency = "NGN"; // or use user's preferred currency
     const basePrice = newPlan.prices[currency] || newPlan.prices["NGN"] || 0;
 
-    // Free plan — switch directly, no payment needed
+    // Free plan — switch directly
     if (basePrice === 0) {
       await req.db.query(
         `UPDATE subscriptions SET plan_id = $1, updated_at = now() WHERE id = $2`,
@@ -891,14 +762,13 @@ export const changePlan = async (req, res) => {
       });
     }
 
-    // Paid plan — cancel current sub so subscribePaystack 409 check passes
+    // Paid plan – cancel current and create new payment
     if (currentSub) {
       await req.db.query(
-        // ← req.db not db
         `UPDATE subscriptions
          SET status = 'cancelled', cancelled_at = now(), updated_at = now()
          WHERE user_id = $1 AND status IN ('active','trialing','past_due')`,
-        [req.user.id], // ← req.user.id not userId
+        [req.user.id],
       );
       await req.db.query(
         `UPDATE users SET subscription_plan = 'free', subscription_badge = null WHERE id = $1`,
@@ -906,12 +776,12 @@ export const changePlan = async (req, res) => {
       );
     }
 
-    // Delegate to existing subscribe handler — it returns the Paystack URL
+    // Delegate to subscribe handler
     req.body.plan_id = new_plan_id;
     req.body.currency = currency;
+    req.body.promo_code = promo_code;
 
-    if (gateway === "stripe") return subscribeStripe(req, res);
-    return subscribePaystack(req, res);
+    return subscribeFlutterwave(req, res);
   } catch (err) {
     console.error("[subscriptions/changePlan]", err);
     return res.status(500).json({ error: "internal server error" });
@@ -919,297 +789,142 @@ export const changePlan = async (req, res) => {
 };
 
 // ──────────────────────────────────────────────────────────────────────
-//  WEBHOOKS
+//  WEBHOOK (FLUTTERWAVE)
 // ──────────────────────────────────────────────────────────────────────
 
-export const paystackSubscriptionWebhook = async (req, res) => {
-  const signature = req.headers["x-paystack-signature"];
-  const crypto = await import("crypto");
-  const hash = crypto.default
-    .createHmac("sha512", PAYSTACK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest("hex");
-
-  if (hash !== signature)
+export const flutterwaveSubscriptionWebhook = async (req, res) => {
+  const signature = req.headers["verif-hash"];
+  if (!signature || signature !== FLW_SECRET_HASH) {
     return res.status(401).json({ error: "invalid signature" });
+  }
 
   const { event, data } = req.body;
 
   try {
-    if (event === "subscription.create") {
-      await req.db.query(
-        `UPDATE subscriptions
-         SET paystack_sub_code = $1, status = 'active'
-         WHERE paystack_email_token = $2`,
-        [data.subscription_code, data.email_token],
-      );
+    if (event !== "charge.completed") {
+      return res.sendStatus(200);
     }
 
-    if (event === "invoice.payment_success") {
-      const { rows: subRows } = await req.db.query(
-        `SELECT s.*, sp.display_name, u.name, u.email
-         FROM subscriptions s
-         JOIN subscription_plans sp ON sp.id = s.plan_id
-         JOIN users u ON u.id = s.user_id
-         WHERE s.paystack_sub_code = $1`,
-        [data.subscription.subscription_code],
-      );
+    const tx_ref = data.tx_ref;
+    const status = data.status;
 
-      if (subRows.length) {
-        const sub = subRows[0];
-        const now = new Date();
-        const expiry = new Date(now);
-        expiry.setMonth(expiry.getMonth() + 1);
-
-        await req.db.query(
-          `UPDATE subscriptions
-           SET status = 'active', current_period_start = $1,
-               current_period_end = $2, bookings_used = 0, updated_at = now()
-           WHERE id = $3`,
-          [now, expiry, sub.id],
-        );
-
-        await req.db.query(
-          `INSERT INTO subscription_invoices
-             (subscription_id, user_id, amount, currency, status, gateway,
-              period_start, period_end, paid_at)
-           VALUES ($1,$2,$3,$4,'paid','paystack',$5,$6,now())`,
-          [sub.id, sub.user_id, data.amount / 100, "NGN", now, expiry],
-        );
-
-        await notify(req.db, {
-          userId: sub.user_id,
-          type: "payment_received",
-          title: "Subscription renewed",
-          body: `Your ${sub.display_name} subscription has been renewed.`,
-          action_url: "/settings/subscription",
-          sendMail: () =>
-            sendSubscriptionRenewalEmail(
-              { name: sub.name, email: sub.email },
-              sub,
-              {
-                currency: "NGN",
-                amount: data.amount / 100,
-                period_start: now,
-                period_end: expiry,
-              },
-            ),
-        });
-      }
-    }
-
-    if (event === "invoice.payment_failed") {
-      await req.db.query(
-        `UPDATE subscriptions SET status = 'past_due'
-         WHERE paystack_sub_code = $1`,
-        [data.subscription.subscription_code],
-      );
-    }
-
-    if (
-      event === "subscription.not_renew" ||
-      event === "subscription.expiring_cards"
-    ) {
-      const { rows } = await req.db.query(
-        `SELECT s.*, u.name, u.email, sp.display_name
-         FROM subscriptions s
-         JOIN users u ON u.id = s.user_id
-         JOIN subscription_plans sp ON sp.id = s.plan_id
-         WHERE s.paystack_sub_code = $1`,
-        [data.subscription_code],
-      );
-      if (rows.length) {
-        sendSubscriptionExpiredEmail(
-          { name: rows[0].name, email: rows[0].email },
-          { display_name: rows[0].display_name },
-        ).catch(console.error);
-      }
-    }
-
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("[subscriptions/paystackWebhook]", err);
-    return res.sendStatus(500);
-  }
-};
-
-export const stripeSubscriptionWebhook = async (req, res) => {
-  const sig = req.headers["stripe-signature"];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET,
+    // Find the payment record
+    const { rows: paymentRows } = await req.db.query(
+      `SELECT id, customer_id, amount, currency, notes FROM payments
+       WHERE flutterwave_tx_ref = $1 AND status = 'pending'`,
+      [tx_ref],
     );
-  } catch (err) {
-    return res
-      .status(400)
-      .json({ error: `Stripe webhook error: ${err.message}` });
-  }
 
-  try {
-    const data = event.data.object;
-
-    if (event.type === "customer.subscription.updated") {
-      const { rows } = await req.db.query(
-        `SELECT * FROM subscriptions WHERE stripe_sub_id = $1`,
-        [data.id],
-      );
-      if (rows.length) {
-        const status =
-          {
-            active: "active",
-            trialing: "trialing",
-            past_due: "past_due",
-            canceled: "cancelled",
-            paused: "paused",
-          }[data.status] || data.status;
-
-        await req.db.query(
-          `UPDATE subscriptions
-           SET status = $1,
-               current_period_start = to_timestamp($2),
-               current_period_end   = to_timestamp($3),
-               updated_at = now()
-           WHERE stripe_sub_id = $4`,
-          [status, data.current_period_start, data.current_period_end, data.id],
-        );
-      }
+    if (!paymentRows.length) {
+      console.warn(`Payment record not found for tx_ref: ${tx_ref}`);
+      return res.sendStatus(200);
     }
 
-    if (event.type === "invoice.payment_succeeded") {
-      const subId = data.subscription;
-      if (!subId) return res.sendStatus(200);
+    const payment = paymentRows[0];
+    const meta = payment.notes ? JSON.parse(payment.notes) : {};
 
-      const { rows } = await req.db.query(
-        `SELECT s.*, u.name, u.email, sp.display_name
-         FROM subscriptions s
-         JOIN users u ON u.id = s.user_id
-         JOIN subscription_plans sp ON sp.id = s.plan_id
-         WHERE s.stripe_sub_id = $1`,
-        [subId],
-      );
+    if (status === "successful") {
+      const userId = meta.user_id || payment.customer_id;
+      const planId = meta.plan_id;
 
-      if (rows.length) {
-        const sub = rows[0];
-        const amount = data.amount_paid / 100;
-        const currency = data.currency.toUpperCase();
-        const periodStart = new Date(data.period_start * 1000);
-        const periodEnd = new Date(data.period_end * 1000);
-
-        await req.db.query(
-          `UPDATE subscriptions
-           SET bookings_used = 0, status = 'active', updated_at = now()
-           WHERE stripe_sub_id = $1`,
-          [subId],
-        );
-
-        await req.db.query(
-          `INSERT INTO subscription_invoices
-             (subscription_id, user_id, amount, currency, status, gateway,
-              gateway_ref, period_start, period_end, paid_at)
-           VALUES ($1,$2,$3,$4,'paid','stripe',$5,$6,$7,now())`,
-          [
-            sub.id,
-            sub.user_id,
-            amount,
-            currency,
-            data.payment_intent,
-            periodStart,
-            periodEnd,
-          ],
-        );
-
-        await notify(req.db, {
-          userId: sub.user_id,
-          type: "payment_received",
-          title: "Subscription renewed",
-          body: `Your ${sub.display_name} subscription has been renewed.`,
-          action_url: "/settings/subscription",
-          sendMail: () =>
-            sendSubscriptionRenewalEmail(
-              { name: sub.name, email: sub.email },
-              sub,
-              {
-                currency,
-                amount,
-                period_start: periodStart,
-                period_end: periodEnd,
-              },
-            ),
-        });
+      if (!userId || !planId) {
+        console.error("Missing metadata for subscription activation");
+        return res.sendStatus(500);
       }
-    }
 
-    if (event.type === "invoice.payment_failed") {
-      const { rows } = await req.db.query(
-        `SELECT s.*, u.name, u.email, sp.display_name
-         FROM subscriptions s
-         JOIN users u ON u.id = s.user_id
-         JOIN subscription_plans sp ON sp.id = s.plan_id
-         WHERE s.stripe_sub_id = $1`,
-        [data.subscription],
-      );
-      if (rows.length) {
-        const sub = rows[0];
-        await req.db.query(
-          `UPDATE subscriptions SET status = 'past_due' WHERE stripe_sub_id = $1`,
-          [data.subscription],
-        );
-
-        await notify(req.db, {
-          userId: sub.user_id,
-          type: "payment_failed",
-          title: "Subscription payment failed",
-          body: "We couldn't renew your subscription. Please update your payment method.",
-          priority: "high",
-          action_url: "/settings/subscription",
-          sendMail: () =>
-            sendSubscriptionPaymentFailedEmail(
-              { name: sub.name, email: sub.email },
-              sub,
-              {
-                currency: data.currency.toUpperCase(),
-                amount: data.amount_due / 100,
-                failure_reason:
-                  data.last_payment_error?.message || "Card declined",
-              },
-            ),
-        });
+      const plan = await getPlan(req.db, planId);
+      if (!plan) {
+        console.error("Plan not found:", planId);
+        return res.sendStatus(500);
       }
-    }
 
-    if (event.type === "customer.subscription.deleted") {
+      // Activate subscription
+      await activateSubscription(req.db, {
+        userId,
+        planId: plan.id,
+        currency: payment.currency,
+        amount: payment.amount,
+        gateway: "flutterwave",
+        flutterwave_tx_ref: tx_ref,
+        flutterwave_transaction_id: data.id,
+        promoCode: meta.promo_code,
+        interval: plan.interval,
+        trial_end:
+          plan.trial_days > 0
+            ? new Date(Date.now() + plan.trial_days * 86400000)
+            : null,
+      });
+
+      // Update payment status
       await req.db.query(
-        `UPDATE subscriptions
-         SET status = 'cancelled', cancelled_at = now()
-         WHERE stripe_sub_id = $1`,
-        [data.id],
+        `UPDATE payments SET status = 'success', paid_at = now() WHERE id = $1`,
+        [payment.id],
       );
-      const { rows } = await req.db.query(
-        `SELECT user_id FROM subscriptions WHERE stripe_sub_id = $1`,
-        [data.id],
+
+      // Notifications
+      const sub = await getActiveSub(req.db, userId);
+      const { rows: userRows } = await req.db.query(
+        `SELECT name, email FROM users WHERE id = $1`,
+        [userId],
       );
-      if (rows.length) {
+      const user = userRows[0];
+
+      if (user) {
+        await notify(req.db, {
+          userId,
+          type: "payment_received",
+          title: `${plan.display_name} subscription activated 🎉`,
+          body: `Your ${plan.display_name} subscription is now active. Enjoy your benefits!`,
+          priority: "high",
+          action_url: "/settings",
+          data: {
+            plan_name: plan.name,
+            plan_id: planId,
+            amount: sub?.amount || payment.amount,
+            currency: sub?.currency || payment.currency,
+          },
+          sendMail: () => sendSubscriptionConfirmationEmail(user, plan, sub),
+        });
+
+        if (plan.name === "pro_badge" || plan.name?.includes("pro")) {
+          sendProBadgeActivatedEmail(user).catch(console.error);
+        }
+
+        if (sub?.trial_end) {
+          const daysToTrialEnd = Math.ceil(
+            (new Date(sub.trial_end) - Date.now()) / 86400000,
+          );
+          if (daysToTrialEnd <= 3 && daysToTrialEnd > 0) {
+            sendTrialEndingEmail(user, plan, daysToTrialEnd).catch(
+              console.error,
+            );
+          }
+        }
+      }
+
+      if (meta.promo_code) {
         await req.db.query(
-          `UPDATE users SET subscription_plan = 'free', subscription_badge = null
-           WHERE id = $1`,
-          [rows[0].user_id],
+          `UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = $1`,
+          [meta.promo_code.toUpperCase()],
         );
       }
+    } else {
+      // Failed or cancelled
+      await req.db.query(`UPDATE payments SET status = $1 WHERE id = $2`, [
+        status === "cancelled" ? "cancelled" : "failed",
+        payment.id,
+      ]);
     }
 
     return res.sendStatus(200);
   } catch (err) {
-    console.error("[subscriptions/stripeWebhook]", err);
+    console.error("[subscriptions/flutterwaveWebhook]", err);
     return res.sendStatus(500);
   }
 };
 
 // ──────────────────────────────────────────────────────────────────────
-//  ADMIN
+//  ADMIN FUNCTIONS – unchanged (gateway-agnostic)
 // ──────────────────────────────────────────────────────────────────────
 
 export const adminGetSubscriptions = async (req, res) => {
@@ -1277,7 +992,6 @@ export const adminGrantSubscription = async (req, res) => {
     if (!userRows.length)
       return res.status(404).json({ error: "user not found" });
 
-    // Cancel existing
     await req.db.query(
       `UPDATE subscriptions
        SET status = 'cancelled', cancelled_at = now()
@@ -1338,20 +1052,16 @@ export const adminGrantSubscription = async (req, res) => {
 export const adminManagePlans = async (req, res) => {
   const { action } = req.body;
 
-  // ── Sanitise helpers ──────────────────────────────────────────────
-  // Converts "", "null", null, undefined → null; otherwise → integer
   const toIntOrNull = (v) =>
     v !== undefined && v !== null && v !== "" && v !== "null"
       ? parseInt(v, 10)
       : null;
 
-  // Converts "", "null", null, undefined → null; otherwise → string
   const toStrOrNull = (v) =>
     v !== undefined && v !== null && v !== "" && v !== "null"
       ? String(v)
       : null;
 
-  // Ensures a value is a real boolean (handles "true"/"false" strings too)
   const toBool = (v, fallback = false) => {
     if (v === true || v === "true") return true;
     if (v === false || v === "false") return false;
@@ -1359,7 +1069,6 @@ export const adminManagePlans = async (req, res) => {
   };
 
   try {
-    // ── CREATE ──────────────────────────────────────────────────────
     if (action === "create") {
       const {
         name,
@@ -1401,11 +1110,11 @@ export const adminManagePlans = async (req, res) => {
           interval,
           JSON.stringify(prices),
           JSON.stringify(features || []),
-          toIntOrNull(bookings_per_month), // blank/null → NULL, not "null"
+          toIntOrNull(bookings_per_month),
           Number(discount_percent) || 0,
           toBool(priority_matching),
           toBool(dedicated_support),
-          toStrOrNull(badge), // blank/null → NULL
+          toStrOrNull(badge),
           Number(trial_days) || 0,
           Number(sort_order) || 0,
         ],
@@ -1413,27 +1122,22 @@ export const adminManagePlans = async (req, res) => {
       return res.status(201).json({ plan: rows[0] });
     }
 
-    // ── UPDATE ──────────────────────────────────────────────────────
     if (action === "update") {
       const { plan_id, ...updates } = req.body;
       if (!plan_id) return res.status(400).json({ error: "plan_id required" });
 
-      // Columns that must arrive as integer or NULL in Postgres
       const intCols = new Set([
         "bookings_per_month",
         "discount_percent",
         "trial_days",
         "sort_order",
       ]);
-      // Columns that must arrive as text or NULL in Postgres
       const strNullCols = new Set(["badge", "description"]);
-      // Columns that must arrive as boolean
       const boolCols = new Set([
         "priority_matching",
         "dedicated_support",
         "is_featured",
       ]);
-      // Columns stored as JSONB
       const jsonCols = new Set(["prices", "features"]);
 
       const allowed = [
@@ -1492,7 +1196,6 @@ export const adminManagePlans = async (req, res) => {
       return res.json({ plan: rows[0] });
     }
 
-    // ── TOGGLE ──────────────────────────────────────────────────────
     if (action === "toggle") {
       const { plan_id } = req.body;
       if (!plan_id) return res.status(400).json({ error: "plan_id required" });
@@ -1587,9 +1290,6 @@ export const adminManagePromoCodes = async (req, res) => {
   }
 };
 
-// ══════════════════════════════════════════════════════════════════════
-//  REPLACE getSubscriptionAnalytics in subscriptions.controller.js
-// ══════════════════════════════════════════════════════════════════════
 export const getSubscriptionAnalytics = async (req, res) => {
   try {
     const [
@@ -1599,7 +1299,6 @@ export const getSubscriptionAnalytics = async (req, res) => {
       recentSignups,
       invoiceStats,
     ] = await Promise.all([
-      // ── MRR grouped by currency ───────────────────────────────
       req.db.query(`
           SELECT
             COALESCE(currency, 'USD')                                          AS currency,
@@ -1663,7 +1362,6 @@ export const getSubscriptionAnalytics = async (req, res) => {
         : 0;
 
     return res.json({
-      // Array of per-currency MRR rows instead of a single merged object
       mrr_by_currency: mrrByCurrency.rows,
       plan_breakdown: planBreakdown.rows,
       churn_rate_30d: `${churnPercent}%`,
@@ -1676,10 +1374,6 @@ export const getSubscriptionAnalytics = async (req, res) => {
   }
 };
 
-// ══════════════════════════════════════════════════════════════════════
-//  ADD adminUpdateSubscription to subscriptions.controller.js
-//  Add route: router.patch("/admin/:id", ...admin, adminUpdateSubscription)
-// ══════════════════════════════════════════════════════════════════════
 export const adminUpdateSubscription = async (req, res) => {
   const { id } = req.params;
   const {
@@ -1705,7 +1399,6 @@ export const adminUpdateSubscription = async (req, res) => {
   }
 
   try {
-    // Fetch current subscription
     const { rows: existing } = await req.db.query(
       `SELECT s.*, u.name as user_name, sp.name as plan_name
        FROM subscriptions s
@@ -1724,13 +1417,11 @@ export const adminUpdateSubscription = async (req, res) => {
     if (status !== undefined) {
       params.push(status);
       fields.push(`status = $${params.length}`);
-      // Set cancelled_at when cancelling
       if (status === "cancelled" && sub.status !== "cancelled") {
         fields.push("cancelled_at = now()");
       }
     }
     if (plan_id !== undefined) {
-      // Verify plan exists
       const { rows: planRows } = await req.db.query(
         `SELECT id, name, badge FROM subscription_plans WHERE id = $1`,
         [plan_id],
@@ -1739,7 +1430,6 @@ export const adminUpdateSubscription = async (req, res) => {
         return res.status(404).json({ error: "plan not found" });
       params.push(plan_id);
       fields.push(`plan_id = $${params.length}`);
-      // Update user's plan
       await req.db.query(
         `UPDATE users SET subscription_plan = $1, subscription_badge = $2 WHERE id = $3`,
         [planRows[0].name, planRows[0].badge, sub.user_id],
@@ -1767,18 +1457,15 @@ export const adminUpdateSubscription = async (req, res) => {
       params,
     );
 
-    // If cancelled immediately, reset user plan to free
     if (status === "cancelled") {
       await req.db.query(
         `UPDATE users SET subscription_plan = 'free', subscription_badge = null WHERE id = $1`,
         [sub.user_id],
       );
-      // ← Add this:
       const { safeDel } = await import("../config/redis.js");
       await safeDel(`user:${sub.user_id}`);
     }
 
-    // Notify user of status change
     if (status && status !== sub.status) {
       await req.db.query(
         `INSERT INTO notifications

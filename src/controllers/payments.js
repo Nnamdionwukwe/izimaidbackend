@@ -1,28 +1,35 @@
-// src/controllers/payments.js
 import crypto from "crypto";
-import Stripe from "stripe";
 import {
   sendPaymentReceipt,
   sendNewBookingToMaid,
   sendBookingCancelledEmail,
 } from "../utils/mailer.js";
-
 import { notify } from "../utils/notify.js";
 
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-const PAYSTACK_BASE = "https://api.paystack.co";
 const COINBASE_KEY = process.env.COINBASE_COMMERCE_API_KEY;
+// ── 4. Crypto payment via static Trust Wallet addresses ──────────────
+
+// Supported currencies with their wallet addresses (store in .env)
+const CRYPTO_WALLETS = {
+  BTC: process.env.CRYPTO_BTC_ADDRESS,
+  ETH: process.env.CRYPTO_ETH_ADDRESS,
+  USDT: process.env.CRYPTO_USDT_ADDRESS,
+  BNB: process.env.CRYPTO_BNB_ADDRESS,
+  USDC: process.env.CRYPTO_USDC_ADDRESS,
+};
 const PLATFORM_FEE_PERCENT = Number(process.env.PLATFORM_FEE_PERCENT || 10);
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// ── Flutterwave config ──────────────────────────────────────────────
+const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
+const FLW_SECRET_HASH = process.env.FLW_SECRET_HASH;
+const FLW_BASE = "https://api.flutterwave.com/v3";
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
-async function paystackRequest(method, path, body) {
-  const res = await fetch(`${PAYSTACK_BASE}${path}`, {
+// ── Flutterwave request helper ──────────────────────────────────────
+async function flutterwaveRequest(method, path, body) {
+  const res = await fetch(`${FLW_BASE}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      Authorization: `Bearer ${FLW_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -30,19 +37,211 @@ async function paystackRequest(method, path, body) {
   return res.json();
 }
 
-// ── Platform fee is ADDED ON TOP of the maid's service cost ───────────
-// Maid charges ₦10,000 → platform adds 10% → customer pays ₦11,000
-// Maid still gets ₦10,000 (their full rate). Platform earns ₦1,000.
+// ── Platform fee – added ON TOP of the maid's service cost ──────────
 function calcFees(serviceAmount) {
   const n = Number(serviceAmount);
   const platformFee =
     Math.round(((n * PLATFORM_FEE_PERCENT) / 100) * 100) / 100;
   const customerPays = Math.round((n + platformFee) * 100) / 100;
-  const maidPayout = n; // maid gets 100% of their own rate
+  const maidPayout = n;
   return { platformFee, maidPayout, customerPays };
 }
 
-// ── Fetch booking for payment — joins maid_profiles for currency ───────
+export const initializeCryptoPayment = async (req, res) => {
+  const { booking_id, currency = "USDT" } = req.body;
+  if (!booking_id) {
+    return res.status(400).json({ error: "booking_id is required" });
+  }
+
+  if (!CRYPTO_WALLETS[currency]) {
+    return res.status(400).json({
+      error: `Unsupported currency. Supported: ${Object.keys(CRYPTO_WALLETS).join(", ")}`,
+    });
+  }
+
+  const address = CRYPTO_WALLETS[currency];
+  if (!address) {
+    return res.status(503).json({
+      error: `Crypto payment not configured for ${currency} – missing wallet address`,
+    });
+  }
+
+  try {
+    const booking = await fetchBookingForPayment(
+      req.db,
+      booking_id,
+      req.user.id,
+    );
+    if (!booking) {
+      return res
+        .status(404)
+        .json({ error: "booking not found or already paid" });
+    }
+
+    const { platformFee, maidPayout, customerPays } = calcFees(
+      Number(booking.total_amount),
+    );
+
+    await req.db.query(
+      `INSERT INTO payments
+         (booking_id, customer_id, amount, currency, gateway,
+          platform_fee, maid_payout, crypto_currency, crypto_address, crypto_status)
+       VALUES ($1,$2,$3,$4,'crypto',$5,$6,$7,$8,'pending')`,
+      [
+        booking_id,
+        req.user.id,
+        customerPays,
+        booking.maid_currency || "NGN",
+        platformFee,
+        maidPayout,
+        currency,
+        address,
+      ],
+    );
+
+    return res.json({
+      gateway: "crypto",
+      currency,
+      address,
+      expected_amount: customerPays,
+      instructions: `Send exactly the expected amount (or as agreed) in ${currency} to the address above. Then submit the transaction hash and a proof screenshot.`,
+      network:
+        currency === "BTC"
+          ? "Bitcoin"
+          : currency === "ETH"
+            ? "Ethereum"
+            : "BSC",
+    });
+  } catch (err) {
+    console.error("[payments/initializeCryptoPayment]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── 5. Confirm crypto payment with TX hash + proof ────────────────
+export const confirmCryptoPayment = async (req, res) => {
+  const { booking_id, tx_hash, amount_sent, proof_url } = req.body;
+  if (!booking_id || !tx_hash || !proof_url) {
+    return res.status(400).json({
+      error: "booking_id, tx_hash, and proof_url are required",
+    });
+  }
+
+  try {
+    const { rows } = await req.db.query(
+      `UPDATE payments
+       SET crypto_tx_hash = $1,
+           crypto_proof_url = $2,
+           crypto_amount_sent = $3,
+           crypto_status = 'proof_submitted'
+       WHERE booking_id = $4
+         AND customer_id = $5
+         AND gateway = 'crypto'
+         AND crypto_status = 'pending'
+       RETURNING *`,
+      [tx_hash, proof_url, amount_sent || null, booking_id, req.user.id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        error: "No pending crypto payment found for this booking",
+      });
+    }
+
+    return res.json({
+      message:
+        "Crypto payment proof submitted. Admin will verify the transaction on-chain shortly.",
+      payment: rows[0],
+    });
+  } catch (err) {
+    console.error("[payments/confirmCryptoPayment]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── 6. Admin verify crypto payment ──────────────────────────────────
+export const adminVerifyCryptoPayment = async (req, res) => {
+  const { payment_id } = req.params;
+  const { approved, notes } = req.body;
+  if (typeof approved !== "boolean") {
+    return res.status(400).json({ error: "approved must be true or false" });
+  }
+
+  try {
+    const newStatus = approved ? "confirmed" : "failed";
+    const paymentStatus = approved ? "success" : "failed";
+
+    const { rows } = await req.db.query(
+      `UPDATE payments
+       SET crypto_status = $1,
+           status = $2,
+           paid_at = CASE WHEN $3 THEN now() ELSE NULL END,
+           notes = COALESCE(notes, '') || ' ' || $4
+       WHERE id = $5 AND gateway = 'crypto' AND crypto_status = 'proof_submitted'
+       RETURNING *`,
+      [newStatus, paymentStatus, approved, notes || "", payment_id],
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({
+        error: "crypto payment not found or not in proof_submitted state",
+      });
+    }
+
+    const payment = rows[0];
+    if (approved) {
+      await req.db.query(
+        `UPDATE bookings SET status='pending', updated_at=now()
+         WHERE id=$1 AND status='awaiting_payment'`,
+        [payment.booking_id],
+      );
+      // Optionally send notifications / email receipt
+    }
+
+    return res.json({
+      message: approved ? "Crypto payment verified" : "Crypto payment rejected",
+      payment,
+    });
+  } catch (err) {
+    console.error("[payments/adminVerifyCryptoPayment]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Admin list crypto payments ──────────────────────────────────────
+export const adminListCryptoPayments = async (req, res) => {
+  const { type } = req.query;
+  const isHistory = type === "history";
+  try {
+    const { rows } = await req.db.query(
+      `SELECT DISTINCT ON (p.id)
+          p.id AS payment_id, p.amount AS expected_amount,
+          p.crypto_amount_sent, p.currency,
+          p.status, p.crypto_currency, p.crypto_address,
+          p.crypto_tx_hash, p.crypto_proof_url, p.crypto_status,
+          p.notes, p.paid_at, p.created_at,
+          b.id AS booking_id, b.service_date, b.address, b.total_amount,
+          b.duration_hours,
+          c.name AS customer_name, c.email AS customer_email,
+          m.name AS maid_name
+       FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       JOIN users c ON c.id = b.customer_id
+       JOIN users m ON m.id = b.maid_id
+       WHERE p.gateway = 'crypto'
+         AND p.crypto_status = ANY($1)
+       ORDER BY p.id, p.created_at DESC
+       LIMIT 100`,
+      [isHistory ? ["confirmed", "failed"] : ["pending", "proof_submitted"]],
+    );
+    return res.json({ payments: rows });
+  } catch (err) {
+    console.error("[payments/adminListCryptoPayments]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Fetch booking for payment ─────────────────────────────────────────
 async function fetchBookingForPayment(db, bookingId, customerId) {
   const { rows } = await db.query(
     `SELECT
@@ -61,7 +260,7 @@ async function fetchBookingForPayment(db, bookingId, customerId) {
   return rows[0] || null;
 }
 
-// ── 1. Initialize Paystack payment ─────────────────────────────────────
+// ── 1. Initialize Flutterwave payment ────────────────────────────────
 export const initializePayment = async (req, res) => {
   const { booking_id } = req.body;
   if (!booking_id)
@@ -88,54 +287,67 @@ export const initializePayment = async (req, res) => {
     const { platformFee, maidPayout, customerPays } = calcFees(
       Number(booking.total_amount),
     );
+    const currency = booking.maid_currency || "NGN";
     const reference = `ds_${booking_id}_${Date.now()}`;
 
-    const paystackRes = await paystackRequest(
-      "POST",
-      "/transaction/initialize",
-      {
+    const payload = {
+      tx_ref: reference,
+      amount: customerPays,
+      currency: currency,
+      redirect_url: `${process.env.CLIENT_URL}/payment/verify?gateway=flutterwave&booking_id=${booking_id}`,
+      customer: {
         email: booking.email,
-        amount: Math.round(customerPays * 100), // kobo — charge the FULL customer amount
-        currency: booking.maid_currency || "NGN",
-        reference,
-        // In initializePayment, change callback_url:
-        callback_url: `${process.env.CLIENT_URL}/payment/verify?gateway=paystack&booking_id=${booking_id}`,
-        metadata: { booking_id, customer_id: req.user.id },
+        name: booking.customer_name,
       },
+      customizations: {
+        title: "Deusizi Sparkle – Cleaning Service",
+        description: `${booking.duration_hours} hour(s) · ${new Date(booking.service_date).toLocaleDateString()}`,
+        logo: process.env.LOGO_URL,
+      },
+      meta: {
+        booking_id,
+        customer_id: req.user.id,
+      },
+    };
+
+    const flutterwaveRes = await flutterwaveRequest(
+      "POST",
+      "/payments",
+      payload,
     );
 
-    if (!paystackRes.status) {
+    if (flutterwaveRes.status !== "success") {
       return res.status(502).json({
-        error: "paystack initialization failed",
-        details: paystackRes.message,
+        error: "Flutterwave initialization failed",
+        details: flutterwaveRes.message,
       });
     }
 
-    const { reference: ref, access_code, authorization_url } = paystackRes.data;
+    const { tx_ref, link, payment_id } = flutterwaveRes.data;
 
+    // Store Flutterwave data in existing columns
     await req.db.query(
       `INSERT INTO payments
          (booking_id, customer_id, amount, currency, gateway,
-          paystack_reference, paystack_access_code, platform_fee, maid_payout)
-       VALUES ($1,$2,$3,$4,'paystack',$5,$6,$7,$8)
-       ON CONFLICT (paystack_reference) DO NOTHING`,
+          paystack_reference, paystack_access_code, platform_fee, maid_payout, status)
+       VALUES ($1,$2,$3,$4,'flutterwave',$5,$6,$7,$8,'pending')`,
       [
         booking_id,
         req.user.id,
         customerPays,
-        booking.maid_currency || "NGN",
-        ref,
-        access_code,
+        currency,
+        tx_ref,
+        payment_id,
         platformFee,
         maidPayout,
       ],
     );
 
     return res.json({
-      gateway: "paystack",
-      authorization_url,
-      access_code,
-      reference: ref,
+      gateway: "flutterwave",
+      link,
+      tx_ref,
+      payment_id,
     });
   } catch (err) {
     console.error("[payments/initializePayment]", err);
@@ -143,84 +355,7 @@ export const initializePayment = async (req, res) => {
   }
 };
 
-// ── 2. Initialize Stripe payment ───────────────────────────────────────
-export const initializeStripePayment = async (req, res) => {
-  const { booking_id, currency = "usd" } = req.body;
-  if (!booking_id)
-    return res.status(400).json({ error: "booking_id is required" });
-
-  try {
-    const booking = await fetchBookingForPayment(
-      req.db,
-      booking_id,
-      req.user.id,
-    );
-    if (!booking)
-      return res
-        .status(404)
-        .json({ error: "booking not found or already paid" });
-
-    const { rows: existing } = await req.db.query(
-      `SELECT id FROM payments WHERE booking_id = $1 AND status = 'success'`,
-      [booking_id],
-    );
-    if (existing.length)
-      return res.status(409).json({ error: "booking already paid" });
-
-    const { platformFee, maidPayout, customerPays } = calcFees(
-      Number(booking.total_amount),
-    );
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ["card"],
-      mode: "payment",
-      customer_email: booking.email,
-      line_items: [
-        {
-          price_data: {
-            currency,
-            unit_amount: Math.round(customerPays * 100), // charge full customer amount
-            product_data: {
-              name: `Cleaning Service — ${booking.address}`,
-              description: `${booking.duration_hours} hour(s) · ${new Date(booking.service_date).toLocaleDateString()}`,
-            },
-          },
-          quantity: 1,
-        },
-      ],
-      success_url: `${process.env.CLIENT_URL}/payment/verify?gateway=stripe&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.CLIENT_URL}/payment?cancelled=1`,
-      metadata: { booking_id, customer_id: req.user.id },
-    });
-
-    await req.db.query(
-      `INSERT INTO payments
-         (booking_id, customer_id, amount, currency, gateway,
-          stripe_session_id, platform_fee, maid_payout)
-       VALUES ($1,$2,$3,$4,'stripe',$5,$6,$7)`,
-      [
-        booking_id,
-        req.user.id,
-        customerPays,
-        currency.toUpperCase(),
-        session.id,
-        platformFee,
-        maidPayout,
-      ],
-    );
-
-    return res.json({
-      gateway: "stripe",
-      session_id: session.id,
-      url: session.url,
-    });
-  } catch (err) {
-    console.error("[payments/initializeStripePayment]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
-
-// ── 3. Bank transfer ───────────────────────────────────────────────────
+// ── 2. Bank transfer ───────────────────────────────────────────────────
 export const initializeBankTransfer = async (req, res) => {
   const { booking_id } = req.body;
   if (!booking_id)
@@ -276,7 +411,7 @@ export const initializeBankTransfer = async (req, res) => {
   }
 };
 
-// ── 4. Upload bank transfer proof ──────────────────────────────────────
+// ── 3. Upload bank transfer proof ──────────────────────────────────────
 export const confirmBankTransfer = async (req, res) => {
   const { booking_id, proof_url, reference } = req.body;
   if (!booking_id || !proof_url) {
@@ -307,159 +442,46 @@ export const confirmBankTransfer = async (req, res) => {
   }
 };
 
-// ── 5. Crypto payment via Coinbase Commerce ────────────────────────────
-export const initializeCryptoPayment = async (req, res) => {
-  const { booking_id } = req.body;
-  if (!booking_id)
-    return res.status(400).json({ error: "booking_id is required" });
-
-  if (!COINBASE_KEY) {
-    return res.status(503).json({
-      error:
-        "crypto payments not configured — COINBASE_COMMERCE_API_KEY missing",
-    });
-  }
-
-  try {
-    const booking = await fetchBookingForPayment(
-      req.db,
-      booking_id,
-      req.user.id,
-    );
-    if (!booking)
-      return res
-        .status(404)
-        .json({ error: "booking not found or already paid" });
-
-    const { platformFee, maidPayout, customerPays } = calcFees(
-      Number(booking.total_amount),
-    );
-
-    const cbRes = await fetch("https://api.commerce.coinbase.com/charges", {
-      method: "POST",
-      headers: {
-        "X-CC-Api-Key": COINBASE_KEY,
-        "X-CC-Version": "2018-03-22",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: "Deusizi Sparkle Booking",
-        description: `Cleaning service — ${booking.address}`,
-        pricing_type: "fixed_price",
-        local_price: {
-          amount: String(customerPays),
-          currency: "USD", // Coinbase always requires USD as the local price
-        },
-        metadata: { booking_id, customer_id: req.user.id },
-        redirect_url: `${process.env.CLIENT_URL}/payment/verify?gateway=crypto`,
-        cancel_url: `${process.env.CLIENT_URL}/payment?cancelled=1`,
-      }),
-    });
-
-    const cbData = await cbRes.json();
-    if (cbData.error) {
-      return res.status(502).json({
-        error: "crypto payment initialization failed",
-        details: cbData.error.message,
-      });
-    }
-
-    const charge = cbData.data;
-    const expiresAt = new Date(charge.expires_at);
-
-    // Use only columns that exist in payments — avoid crypto-specific columns if not migrated
-    await req.db.query(
-      `INSERT INTO payments
-         (booking_id, customer_id, amount, currency, gateway,
-          platform_fee, maid_payout, notes)
-       VALUES ($1,$2,$3,'USD','crypto',$4,$5,$6)`,
-      [
-        booking_id,
-        req.user.id,
-        customerPays,
-        platformFee,
-        maidPayout,
-        JSON.stringify({
-          charge_id: charge.id,
-          charge_code: charge.code,
-          expires_at: expiresAt,
-        }),
-      ],
-    );
-
-    return res.json({
-      gateway: "crypto",
-      charge_id: charge.id,
-      charge_code: charge.code,
-      hosted_url: charge.hosted_url,
-      expires_at: expiresAt,
-      accepted_currencies: Object.keys(charge.addresses || {}),
-    });
-  } catch (err) {
-    console.error("[payments/initializeCryptoPayment]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
-
-// ── 6. Verify payment ─────────────────────────────────────────────────
+// ── 5. Verify payment ─────────────────────────────────────────────────
 export const verifyPayment = async (req, res) => {
-  const { reference, session_id, gateway } = req.query;
+  const { reference, gateway } = req.query;
 
   try {
-    // ── Stripe ────────────────────────────────────────────────────
-    if (gateway === "stripe" && session_id) {
-      const session = await stripe.checkout.sessions.retrieve(session_id);
-      if (session.payment_status !== "paid") {
-        return res.status(402).json({ error: "payment not completed" });
+    // ── Flutterwave ──────────────────────────────────────────────
+    if (gateway === "flutterwave" && reference) {
+      const flutterwaveRes = await flutterwaveRequest(
+        "GET",
+        `/transactions/verify_by_reference?tx_ref=${reference}`,
+      );
+
+      if (
+        flutterwaveRes.status !== "success" ||
+        flutterwaveRes.data.status !== "successful"
+      ) {
+        await req.db.query(
+          `UPDATE payments SET status='failed' WHERE paystack_reference=$1`,
+          [reference],
+        );
+        return res.status(402).json({ error: "payment not successful" });
       }
 
-      const booking_id = session.metadata?.booking_id;
+      const booking_id = flutterwaveRes.data.meta?.booking_id;
       const client = await req.db.connect();
       try {
         await client.query("BEGIN");
         await client.query(
-          `UPDATE payments SET status = 'success', paid_at = now(), stripe_payment_id = $1
-           WHERE stripe_session_id = $2 AND status != 'success'`,
-          [session.payment_intent, session_id],
+          `UPDATE payments
+           SET status='success', paid_at=now(),
+               stripe_payment_id = $1
+           WHERE paystack_reference = $2`,
+          [flutterwaveRes.data.id, reference],
         );
         await client.query(
-          `UPDATE bookings SET status = 'pending', updated_at = now()
-           WHERE id = $1 AND status = 'awaiting_payment'`,
+          `UPDATE bookings SET status='pending',updated_at=now()
+           WHERE id=$1 AND status='awaiting_payment'`,
           [booking_id],
         );
         await client.query("COMMIT");
-
-        // Fetch booking parties
-        const { rows: bkN } = await req.db.query(
-          `SELECT b.maid_id, b.customer_id, c.name AS customer_name, m.name AS maid_name
-   FROM bookings b
-   JOIN users c ON c.id = b.customer_id
-   JOIN users m ON m.id = b.maid_id
-   WHERE b.id = $1`,
-          [booking_id],
-        );
-        if (bkN[0]) {
-          // Tell customer payment went through
-          await notify(req.db, {
-            userId: bkN[0].customer_id,
-            type: "payment_received",
-            title: "✅ Payment Successful",
-            body: "Your payment was confirmed. The maid will review and accept shortly.",
-            data: { booking_id },
-            action_url: `/bookings/${booking_id}`,
-            priority: "high",
-          });
-          // Tell maid they have a new booking
-          await notify(req.db, {
-            userId: bkN[0].maid_id,
-            type: "booking_created",
-            title: "💳 New Booking",
-            body: `${bkN[0].customer_name} just booked you. Check your bookings to accept.`,
-            data: { booking_id },
-            action_url: `/bookings/${booking_id}`,
-            priority: "high",
-          });
-        }
       } catch (e) {
         await client.query("ROLLBACK");
         throw e;
@@ -472,8 +494,8 @@ export const verifyPayment = async (req, res) => {
         [booking_id],
       );
       const { rows: pr } = await req.db.query(
-        `SELECT * FROM payments WHERE stripe_session_id=$1`,
-        [session_id],
+        `SELECT * FROM payments WHERE paystack_reference=$1`,
+        [reference],
       );
       const { rows: br } = await req.db.query(
         `SELECT * FROM bookings WHERE id=$1`,
@@ -485,171 +507,147 @@ export const verifyPayment = async (req, res) => {
       return res.json({
         message: "payment verified",
         booking_id,
-        gateway: "stripe",
+        gateway: "flutterwave",
       });
     }
 
-    // ── Paystack ──────────────────────────────────────────────────
-    if (!reference)
-      return res.status(400).json({ error: "reference is required" });
-
-    const paystackRes = await paystackRequest(
-      "GET",
-      `/transaction/verify/${reference}`,
-    );
-    if (!paystackRes.status || paystackRes.data.status !== "success") {
-      await req.db.query(
-        `UPDATE payments SET status='failed' WHERE paystack_reference=$1`,
-        [reference],
-      );
-      return res.status(402).json({ error: "payment not successful" });
+    // ── Crypto (no active verification – redirect handled by Coinbase) ──
+    if (gateway === "crypto") {
+      return res.status(200).json({
+        message:
+          "crypto payment initiated – awaiting confirmation from Coinbase",
+      });
     }
 
-    const booking_id = paystackRes.data.metadata?.booking_id;
-    const client = await req.db.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        `UPDATE payments SET status='success',paid_at=now() WHERE paystack_reference=$1`,
-        [reference],
-      );
-      await client.query(
-        `UPDATE bookings SET status='pending',updated_at=now() WHERE id=$1 AND status='awaiting_payment'`,
-        [booking_id],
-      );
-      await client.query("COMMIT");
-    } catch (e) {
-      await client.query("ROLLBACK");
-      throw e;
-    } finally {
-      client.release();
-    }
-
-    const { rows: cr } = await req.db.query(
-      `SELECT u.name,u.email FROM users u JOIN bookings b ON b.customer_id=u.id WHERE b.id=$1`,
-      [booking_id],
-    );
-    const { rows: pr } = await req.db.query(
-      `SELECT * FROM payments WHERE paystack_reference=$1`,
-      [reference],
-    );
-    const { rows: br } = await req.db.query(
-      `SELECT * FROM bookings WHERE id=$1`,
-      [booking_id],
-    );
-    if (cr[0] && pr[0] && br[0])
-      sendPaymentReceipt(cr[0], br[0], pr[0]).catch(console.error);
-
-    return res.json({
-      message: "payment verified",
-      booking_id,
-      gateway: "paystack",
-    });
+    return res
+      .status(400)
+      .json({ error: "invalid gateway or missing reference" });
   } catch (err) {
     console.error("[payments/verifyPayment]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
 
-// ── 7. Paystack webhook ────────────────────────────────────────────────
-export const webhook = async (req, res) => {
-  const signature = req.headers["x-paystack-signature"];
-  const hash = crypto
-    .createHmac("sha512", PAYSTACK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest("hex");
-  if (hash !== signature)
+// ── 6. Flutterwave webhook ────────────────────────────────────────────
+export const flutterwaveWebhook = async (req, res) => {
+  const signature = req.headers["verif-hash"];
+  if (!signature || signature !== FLW_SECRET_HASH) {
     return res.status(401).json({ error: "invalid signature" });
+  }
 
   const { event, data } = req.body;
+  if (event !== "charge.completed") {
+    return res.sendStatus(200);
+  }
+
   try {
-    if (event === "charge.success") {
+    const tx_ref = data.tx_ref;
+    const status = data.status;
+
+    const { rows: paymentRows } = await req.db.query(
+      `SELECT id, booking_id, status FROM payments
+       WHERE paystack_reference = $1`,
+      [tx_ref],
+    );
+
+    if (!paymentRows.length) {
+      console.warn(`Flutterwave tx_ref not found: ${tx_ref}`);
+      return res.sendStatus(200);
+    }
+
+    const payment = paymentRows[0];
+    if (payment.status === "success") {
+      return res.sendStatus(200);
+    }
+
+    if (status === "successful") {
       const client = await req.db.connect();
       try {
         await client.query("BEGIN");
+
         await client.query(
-          `UPDATE payments SET status='success',paid_at=now() WHERE paystack_reference=$1 AND status!='success'`,
-          [data.reference],
+          `UPDATE payments
+           SET status = 'success', paid_at = now(),
+               stripe_payment_id = $1
+           WHERE id = $2`,
+          [data.id, payment.id],
         );
+
         await client.query(
-          `UPDATE bookings SET status='pending',updated_at=now() WHERE id=$1 AND status='awaiting_payment'`,
-          [data.metadata?.booking_id],
+          `UPDATE bookings SET status='pending',updated_at=now()
+           WHERE id=$1 AND status='awaiting_payment'`,
+          [payment.booking_id],
         );
+
         await client.query("COMMIT");
+
+        // Notifications
+        const { rows: bkN } = await req.db.query(
+          `SELECT b.maid_id, b.customer_id, c.name AS customer_name, m.name AS maid_name
+           FROM bookings b
+           JOIN users c ON c.id = b.customer_id
+           JOIN users m ON m.id = b.maid_id
+           WHERE b.id = $1`,
+          [payment.booking_id],
+        );
+        if (bkN[0]) {
+          await notify(req.db, {
+            userId: bkN[0].customer_id,
+            type: "payment_received",
+            title: "✅ Payment Successful",
+            body: "Your payment was confirmed. The maid will review and accept shortly.",
+            data: { booking_id: payment.booking_id },
+            action_url: `/bookings/${payment.booking_id}`,
+            priority: "high",
+          });
+          await notify(req.db, {
+            userId: bkN[0].maid_id,
+            type: "booking_created",
+            title: "💳 New Booking",
+            body: `${bkN[0].customer_name} just booked you. Check your bookings to accept.`,
+            data: { booking_id: payment.booking_id },
+            action_url: `/bookings/${payment.booking_id}`,
+            priority: "high",
+          });
+        }
+
+        // Send receipt email
+        const { rows: cr } = await req.db.query(
+          `SELECT u.name, u.email FROM users u JOIN bookings b ON b.customer_id=u.id WHERE b.id=$1`,
+          [payment.booking_id],
+        );
+        const { rows: br } = await req.db.query(
+          `SELECT * FROM bookings WHERE id=$1`,
+          [payment.booking_id],
+        );
+        const { rows: pr } = await req.db.query(
+          `SELECT * FROM payments WHERE id=$1`,
+          [payment.id],
+        );
+        if (cr[0] && pr[0] && br[0]) {
+          sendPaymentReceipt(cr[0], br[0], pr[0]).catch(console.error);
+        }
       } catch (e) {
         await client.query("ROLLBACK");
         throw e;
       } finally {
         client.release();
       }
+    } else {
+      await req.db.query(`UPDATE payments SET status=$1 WHERE id=$2`, [
+        status === "cancelled" ? "cancelled" : "failed",
+        payment.id,
+      ]);
     }
-    if (event === "refund.processed") {
-      await req.db.query(
-        `UPDATE payments SET status='refunded' WHERE paystack_reference=$1`,
-        [data.transaction_reference],
-      );
-    }
+
     return res.sendStatus(200);
   } catch (err) {
-    console.error("[payments/webhook]", err);
+    console.error("[payments/flutterwaveWebhook]", err);
     return res.sendStatus(500);
   }
 };
 
-// ── 8. Stripe webhook ──────────────────────────────────────────────────
-export const stripeWebhook = async (req, res) => {
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      req.headers["stripe-signature"],
-      process.env.STRIPE_WEBHOOK_SECRET,
-    );
-  } catch (err) {
-    return res
-      .status(400)
-      .json({ error: `Stripe webhook error: ${err.message}` });
-  }
-
-  try {
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      const booking_id = session.metadata?.booking_id;
-      if (session.payment_status === "paid") {
-        const client = await req.db.connect();
-        try {
-          await client.query("BEGIN");
-          await client.query(
-            `UPDATE payments SET status='success',paid_at=now(),stripe_payment_id=$1 WHERE stripe_session_id=$2 AND status!='success'`,
-            [session.payment_intent, session.id],
-          );
-          await client.query(
-            `UPDATE bookings SET status='pending',updated_at=now() WHERE id=$1 AND status='awaiting_payment'`,
-            [booking_id],
-          );
-          await client.query("COMMIT");
-        } catch (e) {
-          await client.query("ROLLBACK");
-          throw e;
-        } finally {
-          client.release();
-        }
-      }
-    }
-    if (event.type === "charge.refunded") {
-      await req.db.query(
-        `UPDATE payments SET status='refunded' WHERE stripe_payment_id=$1`,
-        [event.data.object.payment_intent],
-      );
-    }
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error("[payments/stripeWebhook]", err);
-    return res.sendStatus(500);
-  }
-};
-
-// ── 9. Admin approve booking ───────────────────────────────────────────
+// ── 7. Admin approve booking ───────────────────────────────────────────
 export const adminApproveBooking = async (req, res) => {
   const { booking_id } = req.params;
   try {
@@ -716,7 +714,7 @@ export const adminApproveBooking = async (req, res) => {
   }
 };
 
-// ── 10. Admin reject booking + refund ─────────────────────────────────
+// ── 8. Admin reject booking + refund ─────────────────────────────────
 export const adminRejectBooking = async (req, res) => {
   const { booking_id } = req.params;
   const { reason } = req.body;
@@ -742,34 +740,35 @@ export const adminRejectBooking = async (req, res) => {
         .json({ error: "booking not found or not pending" });
 
     let refundResult = { attempted: false };
-    if (pmt.gateway === "paystack" && pmt.paystack_reference) {
+    // Flutterwave refund
+    if (pmt.gateway === "flutterwave" && pmt.stripe_payment_id) {
       try {
-        const r = await paystackRequest("POST", "/refund", {
-          transaction: pmt.paystack_reference,
-          amount: Math.round(Number(pmt.amount) * 100),
-        });
+        const r = await flutterwaveRequest(
+          "POST",
+          `/transactions/${pmt.stripe_payment_id}/refund`,
+          { amount: pmt.amount },
+        );
         refundResult = {
           attempted: true,
-          gateway: "paystack",
-          success: r.status,
+          gateway: "flutterwave",
+          success: r.status === "success",
         };
       } catch {
-        refundResult = { attempted: true, gateway: "paystack", success: false };
+        refundResult = {
+          attempted: true,
+          gateway: "flutterwave",
+          success: false,
+        };
       }
     }
-    if (pmt.gateway === "stripe" && pmt.stripe_payment_id) {
-      try {
-        const r = await stripe.refunds.create({
-          payment_intent: pmt.stripe_payment_id,
-        });
-        refundResult = {
-          attempted: true,
-          gateway: "stripe",
-          success: r.status === "succeeded",
-        };
-      } catch {
-        refundResult = { attempted: true, gateway: "stripe", success: false };
-      }
+    // Bank transfer refund – manual handling
+    if (pmt.gateway === "bank_transfer") {
+      refundResult = {
+        attempted: true,
+        gateway: "bank_transfer",
+        success: false,
+        note: "Manual refund required – contact bank",
+      };
     }
 
     await req.db.query(`UPDATE payments SET status='refunded' WHERE id=$1`, [
@@ -792,7 +791,9 @@ export const adminRejectBooking = async (req, res) => {
   }
 };
 
-// ── 11–18: unchanged — keep your existing implementations ─────────────
+// ── 9–16: Admin, maid, and listing functions (unchanged) ─────────────
+// All functions below remain exactly as before – no changes needed.
+
 export const adminVerifyBankTransfer = async (req, res) => {
   const { payment_id } = req.params;
   const { approved, notes } = req.body;
@@ -892,7 +893,6 @@ export const adminListPayouts = async (req, res) => {
 
 export const getMaidEarnings = async (req, res) => {
   try {
-    // From maid_payouts (escrow/paid)
     const { rows: payoutRows } = await req.db.query(
       `SELECT
          currency,
@@ -905,22 +905,17 @@ export const getMaidEarnings = async (req, res) => {
        GROUP BY currency`,
       [req.user.id],
     );
-
-    // From wallet (covers maids not in maid_payouts)
     const { rows: walletRows } = await req.db.query(
       `SELECT currency, available_balance, pending_balance, total_earned
        FROM maid_wallets WHERE maid_id = $1`,
       [req.user.id],
     );
-
-    // Merge both sources by currency
     const allCurrencies = [
       ...new Set([
         ...payoutRows.map((r) => r.currency),
         ...walletRows.map((r) => r.currency),
       ]),
     ];
-
     const earnings = allCurrencies.map((cur) => {
       const p = payoutRows.find((r) => r.currency === cur) || {};
       const w = walletRows.find((r) => r.currency === cur) || {};
@@ -932,7 +927,6 @@ export const getMaidEarnings = async (req, res) => {
         in_escrow: Number(p.in_escrow || 0),
       };
     });
-
     return res.json({ earnings });
   } catch (err) {
     console.error("[payments/getMaidEarnings]", err);
@@ -1094,7 +1088,6 @@ export const listCustomerPayments = async (req, res) => {
   }
 };
 
-// Replace adminListBankTransfers:
 export const adminListBankTransfers = async (req, res) => {
   const { type } = req.query;
   const isHistory = type === "history";
@@ -1124,35 +1117,6 @@ export const adminListBankTransfers = async (req, res) => {
     return res.json({ payments: rows });
   } catch (err) {
     console.error("[payments/adminListBankTransfers]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
-
-// Replace adminListCryptoPayments:
-export const adminListCryptoPayments = async (req, res) => {
-  const { type } = req.query;
-  const isHistory = type === "history";
-  try {
-    const { rows } = await req.db.query(
-      `SELECT DISTINCT ON (p.id) p.id AS payment_id, p.amount, p.currency, p.status,
-              p.notes, p.paid_at, p.created_at,
-              b.id AS booking_id, b.service_date, b.address, b.total_amount,
-              b.duration_hours,
-              c.name AS customer_name, c.email AS customer_email,
-              m.name AS maid_name
-       FROM payments p
-       JOIN bookings b ON b.id = p.booking_id
-       JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
-       WHERE p.gateway = 'crypto'
-         AND p.status = ANY($1)
-       ORDER BY p.id, p.created_at DESC
-       LIMIT 100`,
-      [isHistory ? ["success", "failed", "refunded"] : ["pending"]],
-    );
-    return res.json({ payments: rows });
-  } catch (err) {
-    console.error("[payments/adminListCryptoPayments]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };

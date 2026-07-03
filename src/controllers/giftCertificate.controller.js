@@ -1,17 +1,16 @@
-// src/controllers/giftCertificate.controller.js
 import GiftCertificate from "../models/GiftCertificate.js";
-import crypto from "crypto";
 
-// Paystack configuration
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
-const PAYSTACK_BASE = "https://api.paystack.co";
+// ── Flutterwave configuration ──────────────────────────────────────────
+const FLW_SECRET_KEY = process.env.FLW_SECRET_KEY;
+const FLW_SECRET_HASH = process.env.FLW_SECRET_HASH;
+const FLW_BASE = "https://api.flutterwave.com/v3";
 
-// ── Paystack Request Helper ─────────────────────────────────────────────
-async function paystackRequest(method, path, body) {
-  const res = await fetch(`${PAYSTACK_BASE}${path}`, {
+// ── Flutterwave Request Helper ────────────────────────────────────────
+async function flutterwaveRequest(method, path, body) {
+  const res = await fetch(`${FLW_BASE}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${PAYSTACK_SECRET}`,
+      Authorization: `Bearer ${FLW_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -19,7 +18,7 @@ async function paystackRequest(method, path, body) {
   return res.json();
 }
 
-// Validation options
+// ── Validation constants ──────────────────────────────────────────────
 const VALID_STATUSES = ["active", "redeemed", "expired", "cancelled"];
 const VALID_OCCASIONS = [
   "Birthday",
@@ -34,14 +33,14 @@ const VALID_OCCASIONS = [
   "Get Well",
 ];
 
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
 // PUBLIC ROUTES (No authentication required)
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
 
 export const createCertificate = async (req, res) => {
   const { from, to, email, phone, date, message, amount, occasion } = req.body;
 
-  // ─── Validation ───────────────────────────────────────────
+  // ─── Validation ──────────────────────────────────────────────────
   const missing = [];
   if (!from) missing.push("from");
   if (!to) missing.push("to");
@@ -56,7 +55,6 @@ export const createCertificate = async (req, res) => {
     });
   }
 
-  // Email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     return res.status(400).json({
@@ -65,7 +63,6 @@ export const createCertificate = async (req, res) => {
     });
   }
 
-  // Amount validation
   if (amount < 1000) {
     return res.status(400).json({
       success: false,
@@ -73,7 +70,6 @@ export const createCertificate = async (req, res) => {
     });
   }
 
-  // Occasion validation (if provided)
   if (occasion && !VALID_OCCASIONS.includes(occasion)) {
     return res.status(400).json({
       success: false,
@@ -81,7 +77,6 @@ export const createCertificate = async (req, res) => {
     });
   }
 
-  // Phone validation (if provided)
   if (phone) {
     const phoneRegex = /^[\+]?[0-9]{10,15}$/;
     if (!phoneRegex.test(phone.replace(/\s/g, ""))) {
@@ -107,44 +102,61 @@ export const createCertificate = async (req, res) => {
       deliveryDate: date || null,
       occasion: occasion || null,
       purchaseReference: purchaseReference,
-      paymentMethod: "paystack",
+      paymentMethod: "flutterwave",
     });
 
-    // ── Initialize Paystack Transaction ────────────────────
-    const paystackRes = await paystackRequest(
-      "POST",
-      "/transaction/initialize",
-      {
+    // ── Initialize Flutterwave Transaction ──────────────────────
+    const payload = {
+      tx_ref: purchaseReference,
+      amount: Number(amount),
+      currency: "NGN",
+      redirect_url: `${process.env.CLIENT_URL || "http://localhost:5173"}/gift-certificates/verify?reference=${purchaseReference}`,
+      customer: {
         email: email,
-        amount: Math.round(Number(amount) * 100), // Convert to kobo
-        currency: "NGN",
-        reference: purchaseReference,
-        callback_url: `${process.env.CLIENT_URL || "http://localhost:5173"}/gift-certificates/verify?reference=${purchaseReference}`,
-        metadata: {
-          from_name: from,
-          recipient_name: to,
-          recipient_email: email,
-          recipient_phone: phone || null,
-          certificate_id: certificate.id,
-          type: "gift_certificate",
-        },
+        name: to || "Recipient",
       },
+      customizations: {
+        title: "Gift Certificate",
+        description: `Gift from ${from} to ${to}`,
+        logo: process.env.LOGO_URL || "",
+      },
+      meta: {
+        from_name: from,
+        recipient_name: to,
+        recipient_email: email,
+        recipient_phone: phone || null,
+        certificate_id: certificate.id,
+        type: "gift_certificate",
+      },
+    };
+
+    const flutterwaveRes = await flutterwaveRequest(
+      "POST",
+      "/payments",
+      payload,
     );
 
-    if (!paystackRes.status) {
-      // If Paystack initialization fails, mark certificate as cancelled
+    if (flutterwaveRes.status !== "success") {
       await GiftCertificate.updateStatus(
         certificate.id,
         "cancelled",
-        `Paystack error: ${paystackRes.message}`,
+        `Flutterwave error: ${flutterwaveRes.message}`,
       );
 
       return res.status(502).json({
         success: false,
         error: "Payment gateway initialization failed",
-        details: paystackRes.message,
+        details: flutterwaveRes.message,
       });
     }
+
+    const { tx_ref, link, flw_ref, payment_id } = flutterwaveRes.data;
+
+    // Update certificate with Flutterwave data
+    await GiftCertificate.updateAdminNotes(
+      certificate.id,
+      `Flutterwave payment ID: ${payment_id} | Reference: ${flw_ref}`,
+    );
 
     console.log(
       `[gift-certificate] Certificate created: ${certificate.certificate_code} for ${email}`,
@@ -165,9 +177,9 @@ export const createCertificate = async (req, res) => {
         expiresAt: certificate.expires_at,
       },
       payment: {
-        authorization_url: paystackRes.data.authorization_url,
-        access_code: paystackRes.data.access_code,
-        reference: paystackRes.data.reference,
+        link,
+        tx_ref,
+        payment_id,
       },
     });
   } catch (error) {
@@ -179,7 +191,7 @@ export const createCertificate = async (req, res) => {
   }
 };
 
-// ── Verify Paystack Payment ──────────────────────────────────────────────
+// ── Verify Flutterwave Payment ──────────────────────────────────────
 export const verifyCertificatePayment = async (req, res) => {
   const { reference } = req.query;
 
@@ -191,28 +203,11 @@ export const verifyCertificatePayment = async (req, res) => {
   }
 
   try {
-    // Verify with Paystack
-    const paystackRes = await paystackRequest(
-      "GET",
-      `/transaction/verify/${reference}`,
-    );
-
-    if (!paystackRes.status) {
-      return res.status(400).json({
-        success: false,
-        error: "Payment verification failed",
-        details: paystackRes.message,
-      });
-    }
-
-    const data = paystackRes.data;
-
-    // Find the certificate by purchase reference using req.db
+    // Find the certificate
     const { rows } = await req.db.query(
       `SELECT * FROM gift_certificates WHERE purchase_reference = $1`,
       [reference],
     );
-
     const certificate = rows[0];
 
     if (!certificate) {
@@ -222,12 +217,45 @@ export const verifyCertificatePayment = async (req, res) => {
       });
     }
 
-    // Update certificate status based on payment status
-    if (data.status === "success") {
+    // If already active, return success
+    if (certificate.status === "active") {
+      return res.json({
+        success: true,
+        message: "Certificate already active",
+        certificate: {
+          code: certificate.certificate_code,
+          amount: certificate.amount,
+          from: certificate.from_name,
+          to: certificate.recipient_name,
+          email: certificate.recipient_email,
+          phone: certificate.recipient_phone,
+          status: certificate.status,
+          expiresAt: certificate.expires_at,
+        },
+      });
+    }
+
+    // Verify with Flutterwave
+    const flutterwaveRes = await flutterwaveRequest(
+      "GET",
+      `/transactions/verify_by_reference?tx_ref=${reference}`,
+    );
+
+    if (flutterwaveRes.status !== "success") {
+      return res.status(400).json({
+        success: false,
+        error: "Payment verification failed",
+        details: flutterwaveRes.message,
+      });
+    }
+
+    const data = flutterwaveRes.data;
+
+    if (data.status === "successful") {
       await GiftCertificate.updateStatus(
         certificate.id,
         "active",
-        `Paystack verification: ${data.status}`,
+        `Flutterwave verification: ${data.status}`,
       );
 
       // TODO: Send email to recipient with gift certificate
@@ -246,8 +274,8 @@ export const verifyCertificatePayment = async (req, res) => {
           expiresAt: certificate.expires_at,
         },
         transaction: {
-          reference: data.reference,
-          amount: data.amount / 100,
+          id: data.id,
+          amount: data.amount,
           currency: data.currency,
           status: data.status,
         },
@@ -256,7 +284,7 @@ export const verifyCertificatePayment = async (req, res) => {
       await GiftCertificate.updateStatus(
         certificate.id,
         "cancelled",
-        `Paystack verification failed: ${data.status}`,
+        `Flutterwave verification failed: ${data.status}`,
       );
 
       return res.status(400).json({
@@ -277,7 +305,75 @@ export const verifyCertificatePayment = async (req, res) => {
   }
 };
 
-// ── Redeem Gift Certificate ──────────────────────────────────────────────
+// ── Flutterwave Webhook ──────────────────────────────────────────────
+export const webhook = async (req, res) => {
+  const signature = req.headers["verif-hash"];
+  if (!signature || signature !== FLW_SECRET_HASH) {
+    return res.status(401).json({ error: "invalid signature" });
+  }
+
+  const { event, data } = req.body;
+
+  try {
+    // Only process charge.completed events
+    if (event !== "charge.completed") {
+      return res.sendStatus(200);
+    }
+
+    const tx_ref = data.tx_ref;
+    const status = data.status;
+
+    // Find certificate by purchase reference
+    const { rows } = await req.db.query(
+      `SELECT * FROM gift_certificates WHERE purchase_reference = $1`,
+      [tx_ref],
+    );
+    const certificate = rows[0];
+
+    if (!certificate) {
+      console.warn(
+        `[gift-certificate] Certificate not found for tx_ref: ${tx_ref}`,
+      );
+      return res.sendStatus(200);
+    }
+
+    if (certificate.status === "active") {
+      // Already active, ignore
+      return res.sendStatus(200);
+    }
+
+    if (status === "successful") {
+      await GiftCertificate.updateStatus(
+        certificate.id,
+        "active",
+        `Webhook: charge.completed for ${tx_ref}`,
+      );
+      console.log(
+        `[gift-certificate] Webhook: Certificate ${tx_ref} marked as active`,
+      );
+    } else if (status === "cancelled") {
+      await GiftCertificate.updateStatus(
+        certificate.id,
+        "cancelled",
+        `Webhook: payment cancelled for ${tx_ref}`,
+      );
+      console.log(
+        `[gift-certificate] Webhook: Certificate ${tx_ref} cancelled`,
+      );
+    } else {
+      console.log(
+        `[gift-certificate] Webhook: Certificate ${tx_ref} status: ${status}`,
+      );
+    }
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("[gift-certificate/webhook]", err);
+    return res.sendStatus(500);
+  }
+};
+
+// ── Redeem Gift Certificate ──────────────────────────────────────────
 export const redeemCertificate = async (req, res) => {
   const { code } = req.body;
 
@@ -289,7 +385,6 @@ export const redeemCertificate = async (req, res) => {
   }
 
   try {
-    // Find certificate by code
     const certificate = await GiftCertificate.findByCode(code);
 
     if (!certificate) {
@@ -332,11 +427,10 @@ export const redeemCertificate = async (req, res) => {
       });
     }
 
-    // Redeem the certificate
     const redeemed = await GiftCertificate.redeemCertificate(
       code,
       req.user?.id || null,
-      null, // booking_id will be set when used for booking
+      null,
     );
 
     return res.json({
@@ -361,7 +455,7 @@ export const redeemCertificate = async (req, res) => {
   }
 };
 
-// ── Verify Certificate Balance ────────────────────────────────────────────
+// ── Verify Certificate Balance ──────────────────────────────────────
 export const verifyCertificate = async (req, res) => {
   const { code } = req.query;
 
@@ -410,9 +504,9 @@ export const verifyCertificate = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// ADMIN ROUTES (Authentication required)
-// ─────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
+// ADMIN ROUTES (Authentication required) – unchanged
+// ──────────────────────────────────────────────────────────────────────
 
 export const listCertificates = async (req, res) => {
   const { status, occasion, page = 1, limit = 50 } = req.query;

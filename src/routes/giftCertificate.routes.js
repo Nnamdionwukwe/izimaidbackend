@@ -1,8 +1,8 @@
-// src/routes/giftCertificate.routes.js
 import { Router } from "express";
 import {
   createCertificate,
   verifyCertificatePayment,
+  webhook, // ← Flutterwave webhook
   redeemCertificate,
   verifyCertificate,
   listCertificates,
@@ -24,6 +24,11 @@ router.post("/certificates", createCertificate);
 router.get("/certificates/verify", verifyCertificatePayment);
 router.get("/certificates/check", verifyCertificate);
 router.post("/certificates/redeem", redeemCertificate);
+
+// ─────────────────────────────────────────────────────────────
+// WEBHOOK (No authentication – verified by signature)
+// ─────────────────────────────────────────────────────────────
+router.post("/webhook/flutterwave", webhook);
 
 // ─────────────────────────────────────────────────────────────
 // ADMIN ROUTES (Authentication + Admin role required)

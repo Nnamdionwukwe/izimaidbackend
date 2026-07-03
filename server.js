@@ -1,21 +1,16 @@
-// server.js (updated with Foundation routes and webhook)
+// server.js – Flutterwave only (unified webhook)
 import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-// import { sendEmail } from "./src/utils/mailer.js";
-
 import pool from "./src/config/database.js";
 import redis from "./src/config/redis.js";
 
-// ── Webhook controllers imported before express.json() ────────────────
-// These MUST be imported here because they need express.raw() middleware
-// which must be registered before express.json()
-import { stripeWebhook } from "./src/controllers/payments.js";
-import { stripeSubscriptionWebhook } from "./src/controllers/subscriptions.controller.js";
-import { webhook as foundationWebhook } from "./src/controllers/foundation.controller.js";
+// ── Webhook controllers ─────────────────────────────────────────────
+// We now import only the dispatcher
+import { unifiedWebhook } from "./src/controllers/webhookDispatcher.js";
 
-// ── Route imports ─────────────────────────────────────────────────────
+// ── Route imports (unchanged) ──────────────────────────────────────
 import authRoutes from "./src/routes/auth.js";
 import maidsRoutes from "./src/routes/maids.js";
 import bookingsRoutes from "./src/routes/bookings.js";
@@ -84,24 +79,11 @@ app.use(
   }),
 );
 
-// ── Stripe raw-body webhooks MUST come BEFORE express.json() ──────────
+// ── Webhook route (raw body) MUST come BEFORE express.json() ─────────
 app.post(
-  "/api/payments/webhook/stripe",
+  "/api/webhook/flutterwave", // SINGLE ENDPOINT
   express.raw({ type: "application/json" }),
-  stripeWebhook,
-);
-
-app.post(
-  "/api/subscriptions/webhook/stripe",
-  express.raw({ type: "application/json" }),
-  stripeSubscriptionWebhook,
-);
-
-// ── Foundation Paystack Webhook ──────────────────────────────────────
-app.post(
-  "/api/foundation/webhook/paystack",
-  express.raw({ type: "application/json" }),
-  foundationWebhook,
+  unifiedWebhook,
 );
 
 // ── Body parsers ──────────────────────────────────────────────────────
@@ -214,7 +196,7 @@ app.listen(PORT, () => {
   );
   console.log(`💚 Foundation: http://localhost:${PORT}/api/foundation`);
   console.log(
-    `💚 Foundation Webhook: http://localhost:${PORT}/api/foundation/webhook/paystack`,
+    `🔗 Unified Webhook: http://localhost:${PORT}/api/webhook/flutterwave`,
   );
 });
 

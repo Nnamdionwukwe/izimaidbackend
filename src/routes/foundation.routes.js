@@ -1,8 +1,8 @@
-// src/routes/foundation.routes.js
 import { Router } from "express";
 import {
   createDonation,
   verifyDonationPayment,
+  webhook, // ← Flutterwave webhook
   listDonations,
   getDonation,
   updateDonationStatus,
@@ -20,6 +20,11 @@ const router = Router();
 // ─────────────────────────────────────────────────────────────
 router.post("/donations", createDonation);
 router.get("/donations/verify", verifyDonationPayment);
+
+// ─────────────────────────────────────────────────────────────
+// WEBHOOK (No authentication – verified by signature)
+// ─────────────────────────────────────────────────────────────
+router.post("/webhook/flutterwave", webhook);
 
 // ─────────────────────────────────────────────────────────────
 // ADMIN ROUTES (Authentication + Admin role required)
