@@ -4,10 +4,16 @@ import { Resend } from "resend";
 
 const APP_NAME = process.env.APP_NAME || "Deusizi Sparkle";
 const FRONTEND =
-  process.env.CLIENT_URL ||
-  process.env.FRONTEND_URL ||
-  "http://www.deusizisparkle.com";
+  process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// ─── Role‑based dashboard URL ──────────────────────────────────────────
+function getDashboardUrl(user) {
+  if (!user) return FRONTEND;
+  if (user.role === "admin") return `${FRONTEND}/admin`;
+  if (user.role === "maid") return `${FRONTEND}/maid`;
+  return FRONTEND; // customer → homepage
+}
 
 // ── Base send — Resend only ───────────────────────────────────────────
 export async function sendEmail({ to, subject, html }) {
@@ -304,7 +310,7 @@ export async function sendCheckInEmail(customer, maid, booking) {
         row("Time", new Date().toLocaleTimeString(), true),
         row("Address", booking.address, false),
       )}
-      ${btn("Track Live", `${FRONTEND}/bookings/${booking.id}/track`)}
+      ${btn("View Booking", `${FRONTEND}/bookings/${booking.id}`)}  {/* ← removed /track */}
     `),
   });
 }
@@ -324,7 +330,7 @@ export async function sendCheckOutEmail(customer, maid, booking) {
         row("Completed", new Date().toLocaleTimeString(), false),
       )}
       <p style="color:#475569">Please rate your experience!</p>
-      ${btn("Leave a Review", `${FRONTEND}/bookings/${booking.id}/review`)}
+      ${btn("Leave a Review", `${FRONTEND}/bookings/${booking.id}`)}  {/* ← removed /review */}
     `),
   });
 }
@@ -376,7 +382,7 @@ export async function sendSOSEmail(
     )}
     ${message ? `<p style="color:#475569"><strong>Message:</strong> ${message}</p>` : ""}
     ${mapLink ? `<p style="margin:16px 0">${mapLink}</p>` : ""}
-    ${btn("View Booking", `${FRONTEND}/admin/bookings/${booking.id}`, "#dc2626")}
+    ${btn("View Booking", `${FRONTEND}/bookings/${booking.id}`, "#dc2626")}  {/* ← changed from admin route */}
   `);
 
   for (const r of recipients) {
@@ -496,6 +502,7 @@ export async function sendBankTransferInstructions(
   booking,
   transferDetails,
 ) {
+  const paymentUrl = `${FRONTEND}/payment?bookingId=${booking.id}`;
   return sendEmail({
     to: customer.email,
     subject: `Bank transfer instructions — ${APP_NAME}`,
@@ -519,7 +526,7 @@ export async function sendBankTransferInstructions(
         ⚠️ Use the reference number as your payment narration.
         Upload your proof of payment after transfer.
       </p>
-      ${btn("Upload Proof", `${FRONTEND}/bookings/${booking.id}/payment`)}
+      ${btn("Upload Proof", paymentUrl)}  {/* ← changed */}
     `),
   });
 }
@@ -771,7 +778,7 @@ export async function sendDocumentSubmittedEmail(maid, docType) {
       <p style="color:#94a3b8;font-size:13px">
         Verification typically takes 1–2 business days.
       </p>
-      ${btn("View Profile", `${FRONTEND}/maid/profile`)}
+      ${btn("View Profile", `${FRONTEND}/maid`)}  {/* ← changed from /maid/profile */}
     `),
   });
 }
@@ -800,7 +807,7 @@ export async function sendDocumentReviewedEmail(
         }
       </p>
       ${adminNotes ? `<p style="color:#475569"><strong>Notes:</strong> ${adminNotes}</p>` : ""}
-      ${btn("View Profile", `${FRONTEND}/maid/profile`)}
+      ${btn("View Profile", `${FRONTEND}/maid`)}  {/* ← changed */}
     `),
   });
 }
@@ -812,6 +819,7 @@ export async function sendSubscriptionConfirmationEmail(
   plan,
   subscription,
 ) {
+  const dashUrl = getDashboardUrl(user);
   return sendEmail({
     to: user.email,
     subject: `${plan.display_name} subscription activated — ${APP_NAME}`,
@@ -845,7 +853,7 @@ export async function sendSubscriptionConfirmationEmail(
       <ul style="color:#475569;font-size:14px;line-height:1.8">
         ${(plan.features || []).map((f) => `<li>${f}</li>`).join("")}
       </ul>
-      ${btn("Go to Dashboard", `${FRONTEND}/dashboard`)}
+      ${btn("Go to Dashboard", dashUrl)}  {/* ← changed */}
     `),
   });
 }
@@ -878,7 +886,7 @@ export async function sendSubscriptionRenewalEmail(
         ),
         row("Status", "Active ✓", true),
       )}
-      ${btn("View Subscription", `${FRONTEND}/settings/subscription`)}
+      ${btn("View Subscription", `${FRONTEND}/settings`)}  {/* ← changed */}
     `),
   });
 }
@@ -907,7 +915,7 @@ export async function sendSubscriptionCancelledEmail(user, plan, subscription) {
       <p style="color:#94a3b8;font-size:13px">
         We're sorry to see you go. You can resubscribe anytime.
       </p>
-      ${btn("Resubscribe", `${FRONTEND}/pricing`)}
+      ${btn("Resubscribe", `${FRONTEND}/`)}  {/* ← changed */}
     `),
   });
 }
@@ -923,7 +931,7 @@ export async function sendSubscriptionExpiredEmail(user, plan) {
         subscription has expired.
         Renew now to keep your benefits.
       </p>
-      ${btn("Renew Now", `${FRONTEND}/pricing`, "#16a34a")}
+      ${btn("Renew Now", `${FRONTEND}/`, "#16a34a")}  {/* ← changed */}
     `),
   });
 }
@@ -949,7 +957,7 @@ export async function sendSubscriptionPaymentFailedEmail(user, plan, invoice) {
       <p style="color:#475569;font-size:14px">
         Please update your payment method to avoid losing access.
       </p>
-      ${btn("Update Payment", `${FRONTEND}/settings/subscription`, "#dc2626")}
+      ${btn("Update Payment", `${FRONTEND}/settings`, "#dc2626")}  {/* ← changed */}
     `),
   });
 }
@@ -967,7 +975,7 @@ export async function sendTrialEndingEmail(user, plan, daysLeft) {
       <p style="color:#475569">
         Subscribe now to keep your benefits and avoid interruption.
       </p>
-      ${btn("Subscribe Now", `${FRONTEND}/pricing`)}
+      ${btn("Subscribe Now", `${FRONTEND}/`)}  {/* ← changed */}
     `),
   });
 }
@@ -988,7 +996,7 @@ export async function sendProBadgeActivatedEmail(maid) {
         <li>✅ 20% more visibility on the platform</li>
         <li>✅ Trust badge on all your bookings</li>
       </ul>
-      ${btn("View Your Profile", `${FRONTEND}/maid/profile`)}
+      ${btn("View Your Profile", `${FRONTEND}/maid`)}  {/* ← changed */}
     `),
   });
 }
@@ -1019,7 +1027,7 @@ export async function sendSupportChatMessageEmail(
                   font-size:14px;color:#334155;line-height:1.6">
         "${messagePreview.length > 200 ? messagePreview.slice(0, 200) + "…" : messagePreview}"
       </div>
-      ${btn("Open Support Chat", `${FRONTEND}/support/chat`)}
+      ${btn("Open Support Chat", `${FRONTEND}/customersupport`)}  {/* ← changed */}
       <p style="color:#94a3b8;font-size:13px">
         You can reply directly in the app.
       </p>
@@ -1048,7 +1056,7 @@ export async function sendMaidSupportChatMessageEmail(
                   font-size:14px;color:#334155;line-height:1.6">
         "${messagePreview.length > 200 ? messagePreview.slice(0, 200) + "…" : messagePreview}"
       </div>
-      ${btn("Open Maid Support Chat", `${FRONTEND}/maid/support/chat`)}
+      ${btn("Open Maid Support Chat", `${FRONTEND}/maid?tab=support`)}  {/* ← changed */}
       <p style="color:#94a3b8;font-size:13px">
         You can reply directly in the app.
       </p>
@@ -1102,7 +1110,7 @@ export async function sendCustomerTicketCreatedEmail(user, ticket) {
       <p style="color:#94a3b8;font-size:13px">
         Our team typically responds within 24 hours on business days.
       </p>
-      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
+      ${btn("View Ticket", `${FRONTEND}/customersupport`)}  {/* ← changed */}
     `),
   });
 }
@@ -1127,7 +1135,7 @@ export async function sendCustomerTicketReplyEmail(
                   font-size:14px;color:#334155;line-height:1.6">
         "${replyMessage.length > 300 ? replyMessage.slice(0, 300) + "…" : replyMessage}"
       </div>
-      ${btn("View & Reply", `${FRONTEND}/support/tickets/${ticket.id}`)}
+      ${btn("View & Reply", `${FRONTEND}/customersupport`)}  {/* ← changed */}
     `),
   });
 }
@@ -1167,7 +1175,7 @@ export async function sendCustomerTicketStatusEmail(user, ticket, newStatus) {
       <p style="color:#475569">
         Hi ${user.name}, your support ticket "<strong>${ticket.subject}</strong>" ${cfg.text}
       </p>
-      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
+      ${btn("View Ticket", `${FRONTEND}/customersupport`)}  {/* ← changed */}
     `),
   });
 }
@@ -1191,7 +1199,7 @@ export async function sendMaidTicketCreatedEmail(user, ticket) {
       <p style="color:#94a3b8;font-size:13px">
         Our team typically responds within 24 hours on business days.
       </p>
-      ${btn("View Ticket", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+      ${btn("View Ticket", `${FRONTEND}/maid?tab=support`)}  {/* ← changed */}
     `),
   });
 }
