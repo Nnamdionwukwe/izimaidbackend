@@ -349,7 +349,7 @@ export async function sendReviewReceivedEmail(maid, review, customerName) {
         row("Rating", `${review.rating}/5 ${stars}`, false),
         row("Comment", review.comment || "No comment", true),
       )}
-      ${btn("View Profile", `${FRONTEND}/maid/profile`)}
+      ${btn("View Profile", `${FRONTEND}/maid`)}  {/* ← changed from /maid/profile */}
     `),
   });
 }
@@ -483,7 +483,7 @@ export async function sendRefundEmail(customer, booking, amount, reason) {
       ${table(
         row(
           "Amount",
-          `${payment.currency || "₦"}${Number(amount).toLocaleString()}`,
+          `${booking.currency || "₦"}${Number(amount).toLocaleString()}`, // ← fixed: uses booking.currency
           false,
         ),
         row("Reason", reason || "Booking cancelled", true),
@@ -690,75 +690,6 @@ export async function sendWithdrawalAdminAlertEmail(admins, maid, withdrawal) {
       html,
     }).catch(console.error);
   }
-}
-
-// ══════════════════════════════════════════════════════════════════════
-//  SUPPORT EMAILS
-// ══════════════════════════════════════════════════════════════════════
-
-export async function sendSupportTicketCreatedEmail(user, ticket) {
-  return sendEmail({
-    to: user.email,
-    subject: `Support ticket #${ticket.id.slice(0, 8)} created — ${APP_NAME}`,
-    html: wrap(`
-      <h2 style="color:#1e293b;margin:0 0 8px">Support Ticket Created 🎫</h2>
-      <p style="color:#475569">Hi ${user.name}, we received your support request.</p>
-      ${table(
-        row("Ticket ID", `#${ticket.id.slice(0, 8)}`, false),
-        row("Subject", ticket.subject, true),
-        row("Category", ticket.category, false),
-        row("Priority", ticket.priority, true),
-        row("Status", "Open", false),
-      )}
-      <p style="color:#94a3b8;font-size:13px">
-        Our team typically responds within 24 hours.
-      </p>
-      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
-    `),
-  });
-}
-
-export async function sendSupportTicketReplyEmail(user, ticket, replierName) {
-  return sendEmail({
-    to: user.email,
-    subject: `New reply on ticket #${ticket.id.slice(0, 8)} — ${APP_NAME}`,
-    html: wrap(`
-      <h2 style="color:#1e293b;margin:0 0 8px">New Reply on Your Ticket 💬</h2>
-      <p style="color:#475569">
-        Hi ${user.name}, <strong>${replierName}</strong> replied to your support ticket.
-      </p>
-      ${table(
-        row("Ticket", ticket.subject, false),
-        row("Status", ticket.status, true),
-      )}
-      ${btn("View Reply", `${FRONTEND}/support/tickets/${ticket.id}`)}
-    `),
-  });
-}
-
-export async function sendSupportTicketStatusEmail(user, ticket, newStatus) {
-  const statusConfig = {
-    in_progress: { color: "#0284c7", icon: "⏳", text: "is being worked on" },
-    resolved: { color: "#16a34a", icon: "✅", text: "has been resolved" },
-    closed: { color: "#64748b", icon: "🔒", text: "has been closed" },
-  };
-  const cfg = statusConfig[newStatus] || {
-    color: "#1e293b",
-    icon: "📋",
-    text: `is now ${newStatus}`,
-  };
-
-  return sendEmail({
-    to: user.email,
-    subject: `Ticket ${newStatus} — ${APP_NAME}`,
-    html: wrap(`
-      <h2 style="color:${cfg.color};margin:0 0 8px">${cfg.icon} Ticket Update</h2>
-      <p style="color:#475569">
-        Hi ${user.name}, your support ticket "<strong>${ticket.subject}</strong>" ${cfg.text}.
-      </p>
-      ${btn("View Ticket", `${FRONTEND}/support/tickets/${ticket.id}`)}
-    `),
-  });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1224,7 +1155,7 @@ export async function sendMaidTicketReplyEmail(
                   font-size:14px;color:#334155;line-height:1.6">
         "${replyMessage.length > 300 ? replyMessage.slice(0, 300) + "…" : replyMessage}"
       </div>
-      ${btn("View & Reply", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+      ${btn("View & Reply", `${FRONTEND}/maid?tab=support`)}  {/* ← changed */}
     `),
   });
 }
@@ -1264,7 +1195,7 @@ export async function sendMaidTicketStatusEmail(user, ticket, newStatus) {
       <p style="color:#475569">
         Hi ${user.name}, your maid support ticket "<strong>${ticket.subject}</strong>" ${cfg.text}
       </p>
-      ${btn("View Ticket", `${FRONTEND}/maid/support/tickets/${ticket.id}`)}
+      ${btn("View Ticket", `${FRONTEND}/maid?tab=support`)}  {/* ← changed */}
     `),
   });
 }
