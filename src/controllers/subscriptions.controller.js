@@ -235,14 +235,12 @@ export const subscribeFlutterwave = async (req, res) => {
     );
     const user = userRows[0];
 
-    // Flutterwave requires a recurring plan if interval is provided
-    // We'll create a one-time payment then set up a recurring plan via webhook
-    const reference = `ds_sub_${req.user.id.slice(0, 8)}_${Date.now()}`;
+    const tx_ref = `ds_sub_${req.user.id.slice(0, 8)}_${Date.now()}`;
 
     const payload = {
-      tx_ref: reference,
+      tx_ref,
       amount: finalPrice,
-      currency: currency,
+      currency,
       redirect_url: `${process.env.CLIENT_URL}/subscription/verify?gateway=flutterwave`,
       customer: {
         email: user.email,
@@ -267,6 +265,10 @@ export const subscribeFlutterwave = async (req, res) => {
       "/payments",
       payload,
     );
+    console.log(
+      "[subscribeFlutterwave] Response:",
+      JSON.stringify(flutterwaveRes, null, 2),
+    );
 
     if (flutterwaveRes.status !== "success") {
       return res.status(502).json({
@@ -275,23 +277,30 @@ export const subscribeFlutterwave = async (req, res) => {
       });
     }
 
-    const { tx_ref, link, flw_ref, payment_id } = flutterwaveRes.data;
+    const link = flutterwaveRes.data.link;
 
-    // Store pending subscription in payments table
+    // ── Store metadata in notes column ──
+    const notes = JSON.stringify({
+      user_id: req.user.id,
+      plan_id: plan.id,
+      plan_name: plan.name,
+      currency,
+      promo_code: promo_code || null,
+    });
+
     await req.db.query(
       `INSERT INTO payments
          (booking_id, customer_id, amount, currency, gateway,
-          flutterwave_tx_ref, flutterwave_payment_id, status)
-       VALUES (NULL, $1, $2, $3, 'flutterwave', $4, $5, 'pending')
+          flutterwave_tx_ref, flutterwave_payment_id, status, notes)
+       VALUES (NULL, $1, $2, $3, 'flutterwave', $4, NULL, 'pending', $5)
        RETURNING id`,
-      [req.user.id, finalPrice, currency, tx_ref, payment_id],
+      [req.user.id, finalPrice, currency, tx_ref, notes],
     );
 
     return res.json({
       gateway: "flutterwave",
       link,
       tx_ref,
-      payment_id,
     });
   } catch (err) {
     console.error("[subscriptions/subscribeFlutterwave]", err);
@@ -328,134 +337,6 @@ async function activateFreePlan(req, res, plan) {
     plan,
   });
 }
-
-// ──────────────────────────────────────────────────────────────────────
-//  VERIFY PAYMENT & ACTIVATE SUBSCRIPTION
-// ──────────────────────────────────────────────────────────────────────
-
-export const verifySubscriptionPayment = async (req, res) => {
-  const { gateway, reference, transaction_id } = req.query;
-
-  try {
-    if (gateway !== "flutterwave") {
-      return res.status(400).json({ error: "only flutterwave is supported" });
-    }
-
-    // Flutterwave webhook should handle the activation, but we also provide
-    // a fallback verification endpoint.
-    const { rows } = await req.db.query(
-      `SELECT * FROM payments WHERE flutterwave_tx_ref = $1 AND status = 'pending'`,
-      [reference],
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ error: "payment not found" });
-    }
-
-    const payment = rows[0];
-
-    // Verify with Flutterwave
-    const verifyRes = await flutterwaveRequest(
-      "GET",
-      `/transactions/${payment.flutterwave_payment_id}/verify`,
-    );
-
-    if (
-      verifyRes.status !== "success" ||
-      verifyRes.data.status !== "successful"
-    ) {
-      return res.status(402).json({ error: "payment not successful" });
-    }
-
-    // Extract metadata from the original request (stored in notes)
-    const meta = payment.notes ? JSON.parse(payment.notes) : {};
-    const userId = meta.user_id || payment.customer_id;
-    const planId = meta.plan_id;
-
-    if (!userId || !planId) {
-      return res.status(400).json({ error: "missing subscription metadata" });
-    }
-
-    // Activate subscription
-    const plan = await getPlan(req.db, planId);
-    if (!plan) return res.status(404).json({ error: "plan not found" });
-
-    await activateSubscription(req.db, {
-      userId,
-      planId: plan.id,
-      currency: payment.currency,
-      amount: payment.amount,
-      gateway: "flutterwave",
-      flutterwave_tx_ref: payment.flutterwave_tx_ref,
-      flutterwave_transaction_id: verifyRes.data.id,
-      promoCode: meta.promo_code,
-      interval: plan.interval,
-      trial_end:
-        plan.trial_days > 0
-          ? new Date(Date.now() + plan.trial_days * 86400000)
-          : null,
-    });
-
-    // Update payment status
-    await req.db.query(
-      `UPDATE payments SET status = 'success', paid_at = now() WHERE id = $1`,
-      [payment.id],
-    );
-
-    // Get subscription and send notifications
-    const sub = await getActiveSub(req.db, userId);
-    const { rows: userRows } = await req.db.query(
-      `SELECT name, email FROM users WHERE id = $1`,
-      [userId],
-    );
-    const user = userRows[0];
-
-    await notify(req.db, {
-      userId,
-      type: "payment_received",
-      title: `${plan.display_name} subscription activated 🎉`,
-      body: `Your ${plan.display_name} subscription is now active. Enjoy your benefits!`,
-      priority: "high",
-      action_url: "/settings",
-      data: {
-        plan_name: plan.name,
-        plan_id: planId,
-        amount: sub.amount,
-        currency: sub.currency,
-      },
-      sendMail: () => sendSubscriptionConfirmationEmail(user, plan, sub),
-    });
-
-    if (plan.name === "pro_badge" || plan.name?.includes("pro")) {
-      sendProBadgeActivatedEmail(user).catch(console.error);
-    }
-
-    if (sub.trial_end) {
-      const daysToTrialEnd = Math.ceil(
-        (new Date(sub.trial_end) - Date.now()) / 86400000,
-      );
-      if (daysToTrialEnd <= 3 && daysToTrialEnd > 0) {
-        sendTrialEndingEmail(user, plan, daysToTrialEnd).catch(console.error);
-      }
-    }
-
-    if (meta.promo_code) {
-      await req.db.query(
-        `UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = $1`,
-        [meta.promo_code.toUpperCase()],
-      );
-    }
-
-    return res.json({
-      message: "Subscription activated",
-      subscription: sub,
-      plan,
-    });
-  } catch (err) {
-    console.error("[subscriptions/verifySubscriptionPayment]", err);
-    return res.status(500).json({ error: "internal server error" });
-  }
-};
 
 // ── Internal: activate subscription in DB ────────────────────────────
 async function activateSubscription(
@@ -563,6 +444,265 @@ async function activateSubscription(
   }
 
   return rows[0];
+}
+
+// ──────────────────────────────────────────────────────────────────────
+//  VERIFY PAYMENT & ACTIVATE SUBSCRIPTION (with fallback)
+// ──────────────────────────────────────────────────────────────────────
+
+export const verifySubscriptionPayment = async (req, res) => {
+  const { gateway, reference, transaction_id } = req.query;
+  const userId = req.user.id;
+
+  console.log("[verify] Received:", {
+    gateway,
+    reference,
+    transaction_id,
+    userId,
+  });
+
+  try {
+    if (gateway !== "flutterwave") {
+      return res.status(400).json({ error: "only flutterwave is supported" });
+    }
+
+    let payment = null;
+
+    // 1. Try by flutterwave_tx_ref
+    if (reference) {
+      const { rows } = await req.db.query(
+        `SELECT * FROM payments WHERE flutterwave_tx_ref = $1`,
+        [reference],
+      );
+      if (rows.length) payment = rows[0];
+    }
+
+    // 2. Try by flutterwave_payment_id
+    if (!payment && transaction_id) {
+      const { rows } = await req.db.query(
+        `SELECT * FROM payments WHERE flutterwave_payment_id = $1`,
+        [transaction_id],
+      );
+      if (rows.length) payment = rows[0];
+    }
+
+    // 3. Fallback: most recent pending payment for this user
+    if (!payment) {
+      const { rows } = await req.db.query(
+        `SELECT * FROM payments 
+         WHERE customer_id = $1 
+           AND gateway = 'flutterwave' 
+           AND status = 'pending'
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId],
+      );
+      if (rows.length) {
+        payment = rows[0];
+        console.log("[verify] Fallback found payment:", payment.id);
+      }
+    }
+
+    if (!payment) {
+      console.error("[verify] No payment found for any method");
+      return res.status(404).json({ error: "payment not found" });
+    }
+
+    console.log(
+      "[verify] Found payment:",
+      payment.id,
+      "status:",
+      payment.status,
+    );
+
+    // Delegate to helper
+    return handlePayment(payment, req, res);
+  } catch (err) {
+    console.error("[subscriptions/verifySubscriptionPayment]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ── Helper to handle a found payment ──────────────────────────────
+async function handlePayment(payment, req, res) {
+  console.log("[handlePayment] Payment record:", {
+    id: payment.id,
+    status: payment.status,
+    flutterwave_tx_ref: payment.flutterwave_tx_ref,
+  });
+
+  if (payment.status === "success") {
+    const sub = await getActiveSub(req.db, payment.customer_id);
+    const plan = sub ? await getPlan(req.db, sub.plan_id) : null;
+    return res.json({
+      message: "Payment already verified",
+      subscription: sub,
+      plan,
+    });
+  }
+
+  if (payment.status === "failed" || payment.status === "cancelled") {
+    return res.status(400).json({ error: `Payment ${payment.status}` });
+  }
+
+  if (!payment.flutterwave_tx_ref) {
+    console.error("[handlePayment] Missing flutterwave_tx_ref");
+    return res
+      .status(500)
+      .json({ error: "Missing payment reference. Please contact support." });
+  }
+
+  // ── Verify with Flutterwave ──
+  const verifyRes = await flutterwaveRequest(
+    "GET",
+    `/transactions/verify_by_reference?tx_ref=${payment.flutterwave_tx_ref}`,
+  );
+
+  console.log("[handlePayment] Verify response:", verifyRes);
+
+  if (verifyRes.status !== "success" || !verifyRes.data) {
+    return res
+      .status(500)
+      .json({ error: "Could not verify payment. Please contact support." });
+  }
+
+  const fwStatus = verifyRes.data.status;
+
+  if (fwStatus === "successful") {
+    // ── Extract metadata: try notes first, then fallback to Flutterwave's meta ──
+    let meta = {};
+    if (payment.notes) {
+      try {
+        meta = JSON.parse(payment.notes);
+        console.log("[handlePayment] Parsed notes:", meta);
+      } catch (e) {
+        console.error("[handlePayment] Error parsing notes:", e);
+      }
+    }
+
+    // Fallback: use meta from Flutterwave response if notes empty
+    if (!meta || Object.keys(meta).length === 0) {
+      const fwMeta = verifyRes.data.meta || {};
+      console.log("[handlePayment] Using Flutterwave meta:", fwMeta);
+      meta = {
+        user_id: fwMeta.user_id || payment.customer_id,
+        plan_id: fwMeta.plan_id,
+        promo_code: fwMeta.promo_code || null,
+      };
+    }
+
+    // Final fallback: use payment.customer_id as user_id
+    if (!meta.user_id) meta.user_id = payment.customer_id;
+
+    const userId = meta.user_id;
+    const planId = meta.plan_id;
+
+    if (!userId || !planId) {
+      console.error("[handlePayment] Missing metadata:", {
+        userId,
+        planId,
+        meta,
+      });
+      return res.status(400).json({ error: "missing subscription metadata" });
+    }
+
+    const plan = await getPlan(req.db, planId);
+    if (!plan) return res.status(404).json({ error: "plan not found" });
+
+    try {
+      // ── Activate subscription ──
+      await activateSubscription(req.db, {
+        userId,
+        planId: plan.id,
+        currency: payment.currency,
+        amount: payment.amount,
+        gateway: "flutterwave",
+        flutterwave_tx_ref: payment.flutterwave_tx_ref,
+        flutterwave_transaction_id: verifyRes.data.id,
+        promoCode: meta.promo_code,
+        interval: plan.interval,
+        trial_end:
+          plan.trial_days > 0
+            ? new Date(Date.now() + plan.trial_days * 86400000)
+            : null,
+      });
+
+      await req.db.query(
+        `UPDATE payments SET status = 'success', paid_at = now() WHERE id = $1`,
+        [payment.id],
+      );
+
+      // ── Send notifications ──
+      const sub = await getActiveSub(req.db, userId);
+      const { rows: userRows } = await req.db.query(
+        `SELECT name, email FROM users WHERE id = $1`,
+        [userId],
+      );
+      const user = userRows[0];
+
+      if (user) {
+        await notify(req.db, {
+          userId,
+          type: "payment_received",
+          title: `${plan.display_name} subscription activated 🎉`,
+          body: `Your ${plan.display_name} subscription is now active. Enjoy your benefits!`,
+          priority: "high",
+          action_url: "/settings",
+          data: {
+            plan_name: plan.name,
+            plan_id: planId,
+            amount: sub?.amount || payment.amount,
+            currency: sub?.currency || payment.currency,
+          },
+          sendMail: () => sendSubscriptionConfirmationEmail(user, plan, sub),
+        });
+
+        if (plan.name === "pro_badge" || plan.name?.includes("pro")) {
+          sendProBadgeActivatedEmail(user).catch(console.error);
+        }
+
+        if (sub?.trial_end) {
+          const daysToTrialEnd = Math.ceil(
+            (new Date(sub.trial_end) - Date.now()) / 86400000,
+          );
+          if (daysToTrialEnd <= 3 && daysToTrialEnd > 0) {
+            sendTrialEndingEmail(user, plan, daysToTrialEnd).catch(
+              console.error,
+            );
+          }
+        }
+      }
+
+      if (meta.promo_code) {
+        await req.db.query(
+          `UPDATE promo_codes SET uses_count = uses_count + 1 WHERE code = $1`,
+          [meta.promo_code.toUpperCase()],
+        );
+      }
+
+      return res.json({
+        message: "Subscription activated",
+        subscription: sub,
+        plan,
+      });
+    } catch (err) {
+      console.error("[handlePayment] Activation error:", err);
+      return res.status(500).json({ error: "Failed to activate subscription" });
+    }
+  } else if (fwStatus === "pending") {
+    await req.db.query(`UPDATE payments SET status = 'pending' WHERE id = $1`, [
+      payment.id,
+    ]);
+    return res.json({
+      message:
+        "Payment is pending confirmation. We'll notify you once confirmed.",
+      status: "pending",
+    });
+  } else {
+    await req.db.query(`UPDATE payments SET status = 'failed' WHERE id = $1`, [
+      payment.id,
+    ]);
+    return res.status(402).json({ error: "Payment was not successful" });
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────

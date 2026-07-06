@@ -4,7 +4,9 @@ import { Resend } from "resend";
 
 const APP_NAME = process.env.APP_NAME || "Deusizi Sparkle";
 const FRONTEND =
-  process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:5173";
+  process.env.CLIENT_URL ||
+  process.env.FRONTEND_URL ||
+  "http://www.deusizisparkle.com";
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── Base send — Resend only ───────────────────────────────────────────
