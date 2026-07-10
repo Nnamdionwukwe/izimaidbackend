@@ -38,18 +38,18 @@ async function fetchBookingWithUsers(db, bookingId) {
 
 // ─── Create booking ───────────────────────────────────────────────────
 export const createBooking = async (req, res) => {
-  // ADD duration_qty to the destructuring:
   const {
     maid_id,
     service_date,
     duration_hours,
-    duration_qty, // ← ADD: raw count of days/weeks/months
+    duration_qty, // raw count of days/weeks/months/units
     address,
     notes,
     rate_type = "hourly",
     total_override,
   } = req.body;
 
+  // ── Validation ──────────────────────────────────────────────────
   if (!maid_id || !service_date || !duration_hours || !address) {
     return res.status(400).json({
       error: "maid_id, service_date, duration_hours, address are required",
@@ -63,7 +63,18 @@ export const createBooking = async (req, res) => {
     });
   }
 
+  // For non‑hourly rates, duration_qty is required
+  if (
+    rate_type !== "hourly" &&
+    (duration_qty === undefined || Number(duration_qty) <= 0)
+  ) {
+    return res.status(400).json({
+      error: `duration_qty is required for rate_type '${rate_type}'`,
+    });
+  }
+
   try {
+    // ── Fetch maid details ──────────────────────────────────────
     const { rows: maidRows } = await req.db.query(
       `SELECT mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
               mp.rate_monthly, mp.rate_custom, mp.is_available,
@@ -84,8 +95,7 @@ export const createBooking = async (req, res) => {
       return res.status(409).json({ error: "maid is not available" });
     }
 
-    // ── Calculate total ───────────────────────────────────────────
-    // ── Calculate total ───────────────────────────────────────────
+    // ── Calculate total ─────────────────────────────────────────
     let rate = 0;
     switch (rate_type) {
       case "hourly":
@@ -101,7 +111,6 @@ export const createBooking = async (req, res) => {
         rate = Number(maid.rate_monthly || 0);
         break;
       case "custom":
-        // rate_custom is JSONB { "Deep Clean": 5000 } — take first value if no label match
         if (maid.rate_custom && typeof maid.rate_custom === "object") {
           const values = Object.values(maid.rate_custom);
           rate = Number(values[0] || 0);
@@ -127,25 +136,27 @@ export const createBooking = async (req, res) => {
       if (rate_type === "hourly") {
         total_amount = rate * Number(duration_hours);
       } else {
-        // daily × days, weekly × weeks, monthly × months, custom × sessions
         total_amount = rate * qty;
       }
     }
-    // ── Insert — only columns that exist in the bookings table ────
+
+    // ── Insert with new columns ──────────────────────────────────
     const { rows } = await req.db.query(
       `INSERT INTO bookings
          (customer_id, maid_id, service_date, duration_hours,
-          address, notes, total_amount, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'awaiting_payment')
+          duration_qty, address, notes, total_amount, rate_type, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'awaiting_payment')
        RETURNING *`,
       [
         req.user.id,
         maid_id,
         service_date,
         Number(duration_hours),
+        Number(duration_qty || 1),
         address,
         notes || null,
         total_amount,
+        rate_type,
       ],
     );
 
