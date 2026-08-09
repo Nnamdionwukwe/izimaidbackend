@@ -1,4 +1,6 @@
-import { google } from "googleapis";
+import os
+
+content = '''import { google } from "googleapis";
 import nodemailer from "nodemailer";
 import { Resend } from "resend";
 
@@ -612,97 +614,10 @@ export async function sendMaidTicketStatusEmail(user, ticket, newStatus) {
       ${btn("View Ticket", `${FRONTEND}/maid?tab=support`)}
     `),
   });
-}
-// ══════════════════════════════════════════════════════════════════════
-//  WITHDRAWAL EMAILS
-// ══════════════════════════════════════════════════════════════════════
+}'''
 
-export async function sendWithdrawalAdminAlertEmail(admins, maid, withdrawal) {
-  const html = wrap(`
-    <h2 style="color:#1e293b;margin:0 0 8px">New Withdrawal Request 💸</h2>
-    <p style="color:#475569">A maid has submitted a withdrawal request.</p>
-    ${table(
-      row("Maid", maid.name, false),
-      row("Email", maid.email, true),
-      row("Amount", `${withdrawal.currency} ${Number(withdrawal.amount).toLocaleString()}`, false),
-      row("Method", withdrawal.method.replace(/_/g, " "), true),
-      row("Net Payout", `${withdrawal.currency} ${Number(withdrawal.net_amount).toLocaleString()}`, false),
-    )}
-    ${btn("Review in Admin", `${FRONTEND}/admin`)}
-  `);
-
-  for (const admin of admins) {
-    sendEmail({ to: admin.email, subject: `New withdrawal request — ${APP_NAME}`, html }).catch(console.error);
-  }
-}
-
-export async function sendWithdrawalStatusEmail(maid, withdrawal, status, gatewayRef, failureReason) {
-  const statusConfig = {
-    processing: {
-      color: "#0284c7",
-      icon: "⏳",
-      title: "Withdrawal Processing",
-      body: "Your withdrawal is being processed and will arrive soon.",
-    },
-    paid: {
-      color: "#16a34a",
-      icon: "✅",
-      title: "Withdrawal Paid",
-      body: `Your withdrawal has been sent. Reference: <strong>${gatewayRef || "N/A"}</strong>.`,
-    },
-    rejected: {
-      color: "#dc2626",
-      icon: "❌",
-      title: "Withdrawal Rejected",
-      body: `Reason: ${failureReason || "Contact support"}. Amount returned to wallet.`,
-    },
-    failed: {
-      color: "#dc2626",
-      icon: "❌",
-      title: "Withdrawal Failed",
-      body: `Reason: ${failureReason || "Contact support"}. Amount returned to wallet.`,
-    },
-    cancelled: {
-      color: "#64748b",
-      icon: "🚫",
-      title: "Withdrawal Cancelled",
-      body: "Your withdrawal has been cancelled. Amount returned to wallet.",
-    },
-  };
-
-  const cfg = statusConfig[status] || statusConfig.processing;
-
-  return sendEmail({
-    to: maid.email,
-    subject: `${cfg.title} — ${APP_NAME}`,
-    html: wrap(`
-      <h2 style="color:${cfg.color};margin:0 0 8px">${cfg.icon} ${cfg.title}</h2>
-      <p style="color:#475569">Hi ${maid.name}, ${cfg.body}</p>
-      ${table(
-        row("Amount", `${withdrawal.currency} ${Number(withdrawal.amount).toLocaleString()}`, false),
-        row("Method", withdrawal.method.replace(/_/g, " "), true),
-        row("Status", status, false),
-      )}
-      ${btn("View Wallet", `${FRONTEND}/maid`)}
-    `),
-  });
-}
-
-export async function sendWithdrawalRequestedEmail(maid, withdrawal) {
-  return sendEmail({
-    to: maid.email,
-    subject: `Withdrawal request received — ${APP_NAME}`,
-    html: wrap(`
-      <h2 style="color:#1e293b;margin:0 0 8px">Withdrawal Request Received 💸</h2>
-      <p style="color:#475569">
-        Hi ${maid.name}, your withdrawal request has been received and is being reviewed.
-      </p>
-      ${table(
-        row("Amount", `${withdrawal.currency} ${Number(withdrawal.amount).toLocaleString()}`, false),
-        row("Method", withdrawal.method.replace(/_/g, " "), true),
-        row("Status", "Pending review", false),
-      )}
-      ${btn("View Wallet", `${FRONTEND}/maid`)}
-    `),
-  });
-}
+os.makedirs('src/utils', exist_ok=True)
+with open('src/utils/mailer.js', 'w') as f:
+    f.write(content)
+print('✅ mailer.js created successfully!')
+print('📁 Location: src/utils/mailer.js')
