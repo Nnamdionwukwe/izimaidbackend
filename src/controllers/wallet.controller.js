@@ -37,6 +37,7 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
+    // ── Update or insert earnings for each currency ────────────────
     for (const row of earnRows) {
       const currency = (row.currency || "NGN").toUpperCase();
       const earned = Number(row.total_earned);
@@ -44,14 +45,11 @@ export const getWallet = async (req, res) => {
       await req.db.query(
         `INSERT INTO maid_wallets
            (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
-         VALUES ($1, $2, $3, 0, $3, 0)
+         VALUES ($1, $2, 0, 0, 0, 0)
          ON CONFLICT (maid_id, currency) DO UPDATE SET
-           total_earned      = GREATEST(maid_wallets.total_earned, $3),
-           available_balance = GREATEST(
-             maid_wallets.available_balance,
-             GREATEST(0, $3 - maid_wallets.total_withdrawn - maid_wallets.pending_balance)
-           ),
-           updated_at = now()`,
+           total_earned      = EXCLUDED.total_earned + $3,
+           available_balance = EXCLUDED.available_balance + $3,
+           updated_at        = now()`,
         [req.user.id, currency, earned],
       );
     }
@@ -115,7 +113,7 @@ export const getWallet = async (req, res) => {
 
     return res.json({
       wallets: walletsWithEscrow,
-      escrow_by_currency: escrowMap, // ← ADD: all currencies with pending escrow
+      escrow_by_currency: escrowMap,
       wallet: {
         ...primary,
         available: Number(primary.available_balance),
