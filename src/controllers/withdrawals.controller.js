@@ -1021,7 +1021,7 @@ export const getNGBanks = async (req, res) => {
   }
 };
 
-// ── Verify Nigerian bank account via Paystack ─────────────────────────
+// ── Verify Nigerian bank account via Flutterwave ─────────────────────────
 // Lets maid confirm account name before submitting withdrawal
 export const verifyNGBankAccount = async (req, res) => {
   const { account_number, bank_code } = req.body;
@@ -1032,26 +1032,42 @@ export const verifyNGBankAccount = async (req, res) => {
       .json({ error: "account_number and bank_code are required" });
   }
 
+  // Validate account number is 10 digits
+  if (!/^\d{10}$/.test(account_number)) {
+    return res.status(400).json({ error: "Account number must be 10 digits" });
+  }
+
   try {
+    // Verify with Flutterwave
     const response = await fetch(
-      `https://api.paystack.co/bank/resolve?account_number=${account_number}&bank_code=${bank_code}`,
+      "https://api.flutterwave.com/v3/accounts/resolve",
       {
-        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.FLW_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          account_number: account_number,
+          account_bank: bank_code,
+        }),
       },
     );
+
     const data = await response.json();
 
-    if (!data.status) {
+    if (!data.status || !data.data) {
       return res.status(400).json({
         error: "could not verify account",
-        details: data.message,
+        details: data.message || "Account verification failed",
       });
     }
 
     return res.json({
       account_name: data.data.account_name,
       account_number: data.data.account_number,
-      bank_code,
+      bank_code: bank_code,
+      bank_name: data.data.bank_name || null,
     });
   } catch (err) {
     console.error("[withdrawals/verifyNGBankAccount]", err);
