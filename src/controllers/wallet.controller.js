@@ -21,40 +21,25 @@ async function ensureWallet(db, maidId, currency = "NGN") {
 // GET /api/wallet  — returns ALL currency balances for the maid
 export const getWallet = async (req, res) => {
   try {
-    // ── Sync earned amounts from released escrow only ──────────────
-    const { rows: earnRows } = await req.db.query(
-      `SELECT
-         COALESCE(p.currency, mp.currency, 'NGN') AS currency,
-         COALESCE(SUM(b.total_amount), 0)          AS total_earned
-       FROM bookings b
-       LEFT JOIN payments      p  ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id   = b.maid_id
-       WHERE b.maid_id       = $1
-         AND b.status        = 'completed'
-         AND b.escrow_status = 'released'
-         AND b.total_amount  > 0
-       GROUP BY COALESCE(p.currency, mp.currency, 'NGN')`,
+    // ── Ensure a wallet exists for this maid (NGN currency) ──────
+    await req.db.query(
+      `INSERT INTO maid_wallets (maid_id, currency, available_balance, pending, total_earned, total_withdrawn)
+       VALUES ($1, 'NGN', 0, 0, 0, 0)
+       ON CONFLICT (maid_id, currency) DO NOTHING`,
       [req.user.id],
     );
 
-    // ── Update or insert earnings for each currency ────────────────
-    for (const row of earnRows) {
-      const currency = (row.currency || "NGN").toUpperCase();
-      const earned = Number(row.total_earned);
+    // ── Fetch all wallet rows ────────────────────────────────────────
+    const { rows: wallets } = await req.db.query(
+      `SELECT currency, available_balance, pending,
+              total_earned, total_withdrawn, updated_at
+       FROM maid_wallets
+       WHERE maid_id = $1
+       ORDER BY total_earned DESC`,
+      [req.user.id],
+    );
 
-      await req.db.query(
-        `INSERT INTO maid_wallets
-           (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
-         VALUES ($1, $2, 0, 0, 0, 0)
-         ON CONFLICT (maid_id, currency) DO UPDATE SET
-           total_earned      = EXCLUDED.total_earned + $3,
-           available_balance = EXCLUDED.available_balance + $3,
-           updated_at        = now()`,
-        [req.user.id, currency, earned],
-      );
-    }
-
-    // ── Escrow pending per currency (completed, not yet released) ──
+    // ── Calculate escrow pending ─────────────────────────────────────
     const { rows: escrowRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, mp.currency, 'NGN') AS currency,
@@ -77,28 +62,14 @@ export const getWallet = async (req, res) => {
       );
     }
 
-    // ── Ensure at least one NGN wallet exists ──────────────────────
-    await req.db.query(
-      `INSERT INTO maid_wallets
-         (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
-       VALUES ($1, 'NGN', 0, 0, 0, 0)
-       ON CONFLICT (maid_id, currency) DO NOTHING`,
-      [req.user.id],
-    );
-
-    // ── Fetch all wallet rows after sync ───────────────────────────
-    const { rows: wallets } = await req.db.query(
-      `SELECT currency, available_balance, pending_balance,
-              total_earned, total_withdrawn, updated_at
-       FROM maid_wallets
-       WHERE maid_id = $1
-       ORDER BY total_earned DESC`,
-      [req.user.id],
-    );
-
-    // ── Attach escrow_pending to each wallet row ───────────────────
+    // ── Build response ──────────────────────────────────────────────
     const walletsWithEscrow = wallets.map((w) => ({
-      ...w,
+      currency: w.currency,
+      available_balance: Number(w.available_balance),
+      pending_balance: Number(w.pending),
+      total_earned: Number(w.total_earned),
+      total_withdrawn: Number(w.total_withdrawn),
+      updated_at: w.updated_at,
       escrow_pending: escrowMap[(w.currency || "NGN").toUpperCase()] || 0,
     }));
 
@@ -115,10 +86,12 @@ export const getWallet = async (req, res) => {
       wallets: walletsWithEscrow,
       escrow_by_currency: escrowMap,
       wallet: {
-        ...primary,
+        currency: primary.currency,
         available: Number(primary.available_balance),
         pending: Number(primary.pending_balance),
         escrow_pending: Number(primary.escrow_pending),
+        total_earned: Number(primary.total_earned),
+        total_withdrawn: Number(primary.total_withdrawn),
       },
     });
   } catch (err) {
@@ -142,7 +115,7 @@ export const getWalletHistory = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT id, currency, type, amount, balance_after,
-              description, reference, booking_id, created_at
+              description, booking_id, created_at
        FROM wallet_transactions
        WHERE ${conditions.join(" AND ")}
        ORDER BY created_at DESC
