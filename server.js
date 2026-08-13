@@ -38,6 +38,7 @@ import maidApplicationRoutes from "./src/routes/maidApplication.routes.js";
 import foundationRoutes from "./src/routes/foundation.routes.js";
 import giftCertificateRoutes from "./src/routes/giftCertificate.routes.js";
 import shelterRoutes from "./src/routes/shelter.routes.js";
+import userRoutes from "./routes/users.js";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -132,6 +133,7 @@ app.use("/api/maid-application", maidApplicationRoutes);
 app.use("/api/foundation", foundationRoutes);
 app.use("/api/gift-certificates", giftCertificateRoutes);
 app.use("/api/shelter", shelterRoutes);
+app.use("/api/users", userRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
