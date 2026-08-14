@@ -39,11 +39,12 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
-    // ── Calculate escrow pending ─────────────────────────────────────
+    // ── Calculate escrow pending with COUNT ─────────────────────────
     const { rows: escrowRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, mp.currency, 'NGN') AS currency,
-         COALESCE(SUM(b.total_amount), 0)          AS escrow_amount
+         COALESCE(SUM(b.total_amount), 0)          AS escrow_amount,
+         COUNT(b.id)                               AS escrow_count
        FROM bookings b
        LEFT JOIN payments      p  ON p.booking_id = b.id AND p.status = 'success'
        LEFT JOIN maid_profiles mp ON mp.user_id   = b.maid_id
@@ -56,10 +57,11 @@ export const getWallet = async (req, res) => {
     );
 
     const escrowMap = {};
+    const escrowCountMap = {};
     for (const row of escrowRows) {
-      escrowMap[(row.currency || "NGN").toUpperCase()] = Number(
-        row.escrow_amount,
-      );
+      const cur = (row.currency || "NGN").toUpperCase();
+      escrowMap[cur] = Number(row.escrow_amount);
+      escrowCountMap[cur] = Number(row.escrow_count);
     }
 
     // ── Build response ──────────────────────────────────────────────
@@ -71,6 +73,7 @@ export const getWallet = async (req, res) => {
       total_withdrawn: Number(w.total_withdrawn),
       updated_at: w.updated_at,
       escrow_pending: escrowMap[(w.currency || "NGN").toUpperCase()] || 0,
+      escrow_count: escrowCountMap[(w.currency || "NGN").toUpperCase()] || 0,
     }));
 
     const primary = walletsWithEscrow[0] || {
@@ -85,6 +88,7 @@ export const getWallet = async (req, res) => {
     return res.json({
       wallets: walletsWithEscrow,
       escrow_by_currency: escrowMap,
+      escrow_count_by_currency: escrowCountMap,
       wallet: {
         currency: primary.currency,
         available: Number(primary.available_balance),
