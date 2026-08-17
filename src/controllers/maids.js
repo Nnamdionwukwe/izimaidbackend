@@ -216,10 +216,13 @@ export const updateProfile = async (req, res) => {
     params.push(max_distance_km);
     fields.push(`max_distance_km = $${params.length}`);
   }
+
+  // ✅ Only update rate_custom if explicitly provided
   if (rate_custom !== undefined) {
     params.push(JSON.stringify(rate_custom));
     fields.push(`rate_custom = $${params.length}`);
   }
+
   if (languages !== undefined) {
     params.push(languages);
     fields.push(`languages = $${params.length}`);
@@ -228,7 +231,6 @@ export const updateProfile = async (req, res) => {
   if (!fields.length)
     return res.status(400).json({ error: "no fields to update" });
 
-  // ← user_id param MUST be last
   params.push(req.user.id);
 
   try {
