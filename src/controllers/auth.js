@@ -142,18 +142,28 @@ export const googleLogin = async (req, res) => {
     if (existing.length > 0) {
       const found = existing[0];
 
+      // ✅ EXISTING USER: Only update google_id if missing, NEVER overwrite name
       const { rows: updated } = await req.db.query(
         `UPDATE users
-         SET name       = $1,
-             google_id  = COALESCE(google_id, $2),
+         SET google_id  = COALESCE(google_id, $1),
              is_active  = true,
              updated_at = now()
-         WHERE id = $3
+         WHERE id = $2
          RETURNING *`,
-        [name, google_id, found.id],
+        [google_id, found.id],
       );
       user = updated[0];
+
+      // ✅ If user has no avatar, set Google avatar (but don't overwrite custom avatar)
+      if (!user.avatar && google_avatar) {
+        await req.db.query(`UPDATE users SET avatar = $1 WHERE id = $2`, [
+          google_avatar,
+          user.id,
+        ]);
+        user.avatar = google_avatar;
+      }
     } else {
+      // ── NEW USER: Create with Google name and avatar
       isNewUser = true;
 
       const { rows: inserted } = await req.db.query(
@@ -187,7 +197,7 @@ export const googleLogin = async (req, res) => {
     // 4. Sign token
     const token = signToken(user);
 
-    // ✅ 5. Get user with maid profile data (using LEFT JOIN - safe for all users)
+    // ✅ 5. Get user with maid profile data
     const { rows: userWithProfile } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.avatar, u.role, u.phone, u.country,
           u.language, u.email_verified, u.auth_provider, u.created_at,
@@ -226,6 +236,7 @@ export const googleLogin = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
 // ── Complete profile (phone number after Google register) ─────────────
 export const completeProfile = async (req, res) => {
   const { phone } = req.body;
