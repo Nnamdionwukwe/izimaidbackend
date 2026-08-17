@@ -241,6 +241,9 @@ export const getWallet = async (req, res) => {
 };
 
 // ── Request withdrawal ─────────────────────────────────────────────────
+// src/controllers/withdrawals.controller.js
+// Replace the requestWithdrawal function with this fixed version
+
 export const requestWithdrawal = async (req, res) => {
   const {
     amount,
@@ -327,7 +330,7 @@ export const requestWithdrawal = async (req, res) => {
       .json({ error: `missing required fields for ${method}` });
   }
 
-  // ── Transaction PIN check — must pass BEFORE any DB writes ───────
+  // ── Transaction PIN check ─────────────────────────────────────────
   if (!transaction_pin) {
     return res.status(400).json({
       error: "transaction_pin is required",
@@ -352,8 +355,8 @@ export const requestWithdrawal = async (req, res) => {
       attempts_left: pinErr.attempts_left,
     });
   }
+
   // ── PIN verified ─────────────────────────────────────────────────
-  // ── Request withdrawal — REPLACE the entire try block after PIN check ──
   try {
     const wallet = await ensureWallet(req.db, req.user.id, currency);
 
@@ -445,6 +448,7 @@ export const requestWithdrawal = async (req, res) => {
       ],
     );
 
+    // ── Get maid info for notifications ──────────────────────────
     const { rows: maidInfo } = await req.db.query(
       `SELECT name, email FROM users WHERE id = $1`,
       [req.user.id],
@@ -452,35 +456,62 @@ export const requestWithdrawal = async (req, res) => {
     const maidName = maidInfo[0]?.name || "Maid";
     const maidEmail = maidInfo[0]?.email || req.user.email;
 
-    await notify(req.db, {
-      userId: req.user.id,
-      type: "withdrawal_requested",
-      title: "Withdrawal request submitted",
-      body: `Your withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")} is being reviewed.`,
-      data: { withdrawal_id: rows[0].id, amount, currency, method },
-      sendMail: () =>
-        sendWithdrawalRequestedEmail(
+    // ── Send notifications (with try-catch to prevent 500 errors) ──
+    try {
+      await notify(req.db, {
+        userId: req.user.id,
+        type: "withdrawal_requested",
+        title: "Withdrawal request submitted",
+        body: `Your withdrawal of ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")} is being reviewed.`,
+        data: { withdrawal_id: rows[0].id, amount, currency, method },
+        sendMail: () =>
+          sendWithdrawalRequestedEmail(
+            { name: maidName, email: maidEmail },
+            rows[0],
+          ),
+      });
+    } catch (notifyErr) {
+      console.error(
+        "[withdrawals] Notification error (non-critical):",
+        notifyErr.message,
+      );
+    }
+
+    try {
+      await notifyAdmins(req.db, {
+        type: "withdrawal_admin_alert",
+        title: "New withdrawal request",
+        body: `${maidName} requested ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
+        data: { withdrawal_id: rows[0].id },
+      });
+    } catch (notifyErr) {
+      console.error(
+        "[withdrawals] Admin notification error (non-critical):",
+        notifyErr.message,
+      );
+    }
+
+    try {
+      const { rows: admins } = await req.db.query(
+        `SELECT id, name, email FROM users WHERE role = 'admin' AND is_active = true`,
+      );
+      if (admins.length > 0) {
+        sendWithdrawalAdminAlertEmail(
+          admins,
           { name: maidName, email: maidEmail },
           rows[0],
-        ),
-    });
+        ).catch((err) =>
+          console.error("[withdrawals] Admin email error:", err.message),
+        );
+      }
+    } catch (adminErr) {
+      console.error(
+        "[withdrawals] Admin fetch error (non-critical):",
+        adminErr.message,
+      );
+    }
 
-    await notifyAdmins(req.db, {
-      type: "withdrawal_admin_alert",
-      title: "New withdrawal request",
-      body: `${maidName} requested ${currency} ${Number(amount).toLocaleString()} via ${method.replace(/_/g, " ")}.`,
-      data: { withdrawal_id: rows[0].id },
-    });
-
-    const { rows: admins } = await req.db.query(
-      `SELECT id, name, email FROM users WHERE role = 'admin' AND is_active = true`,
-    );
-    sendWithdrawalAdminAlertEmail(
-      admins,
-      { name: maidName, email: maidEmail },
-      rows[0],
-    ).catch(console.error);
-
+    // ── Return success response ────────────────────────────────────
     return res.status(201).json({
       message: "Withdrawal request submitted. Processing within 24 hours.",
       withdrawal: rows[0],
