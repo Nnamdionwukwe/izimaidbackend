@@ -130,7 +130,7 @@ export const googleLogin = async (req, res) => {
     return res.status(401).json({ error: "incomplete google profile" });
 
   try {
-    // 2. Find user by google_id OR email (handles accounts created via email first)
+    // 2. Find user by google_id OR email
     const { rows: existing } = await req.db.query(
       `SELECT * FROM users WHERE google_id = $1 OR email = $2 LIMIT 1`,
       [google_id, email],
@@ -140,7 +140,6 @@ export const googleLogin = async (req, res) => {
     let isNewUser = false;
 
     if (existing.length > 0) {
-      // ── Existing user — link google_id if missing, preserve custom avatar
       const found = existing[0];
 
       const { rows: updated } = await req.db.query(
@@ -155,7 +154,6 @@ export const googleLogin = async (req, res) => {
       );
       user = updated[0];
     } else {
-      // ── New user — create with Google avatar
       isNewUser = true;
 
       const { rows: inserted } = await req.db.query(
@@ -166,40 +164,61 @@ export const googleLogin = async (req, res) => {
       );
       user = inserted[0];
 
-      // Create maid profile if needed
       if (role === "maid") {
         await req.db.query(
           `INSERT INTO maid_profiles (user_id, hourly_rate, is_available)
-     SELECT $1, 0, false
-     WHERE NOT EXISTS (SELECT 1 FROM maid_profiles WHERE user_id = $1)`,
+           SELECT $1, 0, false
+           WHERE NOT EXISTS (SELECT 1 FROM maid_profiles WHERE user_id = $1)`,
           [user.id],
         );
       }
 
-      // Create default settings
       await req.db.query(
         `INSERT INTO user_settings (user_id, language, currency)
-   SELECT $1, 'en', 'NGN'
-   WHERE NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id = $1)`,
+         SELECT $1, 'en', 'NGN'
+         WHERE NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id = $1)`,
         [user.id],
       );
     }
 
-    // 3. Device tracking + new device alert
+    // 3. Device tracking
     await handleDeviceTracking(req.db, user, req);
 
     // 4. Sign token
     const token = signToken(user);
 
-    // 5. Cache user (5 min TTL — avatar changes propagate quickly)
-    const { password_hash, ...safeUser } = user;
+    // ✅ 5. Get user with maid profile data (using LEFT JOIN - safe for all users)
+    const { rows: userWithProfile } = await req.db.query(
+      `SELECT u.id, u.name, u.email, u.avatar, u.role, u.phone, u.country,
+          u.language, u.email_verified, u.auth_provider, u.created_at,
+          u.subscription_plan, u.subscription_badge,
+          s.theme, s.currency, s.notifications_email, s.notifications_push,
+          COALESCE(mp.id_verified, false) AS id_verified,
+          COALESCE(mp.background_checked, false) AS background_checked,
+          CASE 
+            WHEN u.subscription_plan IS NOT NULL 
+             AND u.subscription_plan != 'free'
+             AND u.subscription_badge IS NOT NULL
+            THEN true 
+            ELSE false 
+          END AS has_pro_badge
+   FROM users u
+   LEFT JOIN user_settings s ON s.user_id = u.id
+   LEFT JOIN maid_profiles mp ON mp.user_id = u.id
+   WHERE u.id = $1 AND u.is_active = true`,
+      [user.id],
+    );
+
+    const fullUser = userWithProfile[0] || user;
+
+    // 6. Cache user
+    const { password_hash, ...safeUser } = fullUser;
     await safeSet(`user:${user.id}`, 60 * 5, JSON.stringify(safeUser));
 
     return res.status(200).json({
       token,
       user: safeUser,
       isNewUser,
-      // Tell frontend to show phone prompt if new user has no phone
       needsPhone: !!user.google_id && !user.phone,
     });
   } catch (err) {
@@ -207,7 +226,6 @@ export const googleLogin = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
-
 // ── Complete profile (phone number after Google register) ─────────────
 export const completeProfile = async (req, res) => {
   const { phone } = req.body;
