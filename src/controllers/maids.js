@@ -730,3 +730,68 @@ export const adminReviewDocument = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+// ── Custom rates management ──
+export const updateCustomRates = async (req, res) => {
+  try {
+    const { rates } = req.body;
+
+    if (!rates || !Array.isArray(rates)) {
+      return res.status(400).json({ error: "rates must be an array" });
+    }
+
+    // Clean and validate rates
+    const cleanRates = rates
+      .filter((r) => r.name && r.name.trim() && r.amount)
+      .map((r) => ({
+        name: r.name.trim(),
+        amount: Number(r.amount),
+      }));
+
+    // Get existing rates to merge
+    const { rows: existing } = await req.db.query(
+      `SELECT rate_custom FROM maid_profiles WHERE user_id = $1`,
+      [req.user.id],
+    );
+
+    let existingRates = [];
+    if (existing.length > 0 && existing[0].rate_custom) {
+      const existingData =
+        typeof existing[0].rate_custom === "string"
+          ? JSON.parse(existing[0].rate_custom)
+          : existing[0].rate_custom;
+      if (Array.isArray(existingData)) {
+        existingRates = existingData;
+      }
+    }
+
+    // Merge rates (preserve all existing rates)
+    const mergedRates = [...existingRates];
+
+    cleanRates.forEach((newRate) => {
+      const idx = mergedRates.findIndex(
+        (r) => r.name && r.name.toLowerCase() === newRate.name.toLowerCase(),
+      );
+      if (idx >= 0) {
+        mergedRates[idx] = newRate;
+      } else {
+        mergedRates.push(newRate);
+      }
+    });
+
+    // Save merged rates
+    await req.db.query(
+      `UPDATE maid_profiles SET rate_custom = $1, updated_at = now() WHERE user_id = $2`,
+      [JSON.stringify(mergedRates), req.user.id],
+    );
+
+    return res.json({
+      success: true,
+      rates: mergedRates,
+      message: "Custom rates updated successfully",
+    });
+  } catch (err) {
+    console.error("[updateCustomRates]", err);
+    return res.status(500).json({ error: "Failed to update custom rates" });
+  }
+};

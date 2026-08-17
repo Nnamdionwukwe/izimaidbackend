@@ -18,6 +18,7 @@ import {
   uploadMaidDocument,
   getMaidDocuments,
   adminReviewDocument,
+  updateCustomRates,
 } from "../controllers/maids.js";
 
 import { requireAuth, requireRole } from "../middleware/auth.js";
@@ -93,6 +94,13 @@ router.get("/admin/list", requireAuth, requireRole("admin"), adminListMaids);
 // MAID SELF ROUTES
 // ─────────────────────────────────────────────
 router.patch("/profile", requireAuth, updateProfile);
+
+router.patch(
+  "/custom-rates",
+  requireAuth,
+  requireRole("maid"),
+  updateCustomRates,
+);
 
 // Maid documents
 router.get("/my/documents", requireAuth, getMaidDocuments);
