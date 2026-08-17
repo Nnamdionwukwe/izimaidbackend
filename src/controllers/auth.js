@@ -737,14 +737,16 @@ export const uploadAvatar = async (req, res) => {
 
     // 5MB limit
     if (file.size > 5 * 1024 * 1024) {
-      return res.status(400).json({ error: "Image must be under 5MB" });
+      return res.status(400).json({
+        error: "Image must be under 5MB. Please choose a smaller image.",
+      });
     }
 
     const validTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
     if (!validTypes.includes(file.mimetype)) {
-      return res
-        .status(400)
-        .json({ error: "Only JPG, PNG, WebP and GIF are allowed" });
+      return res.status(400).json({
+        error: "Only JPG, PNG, WebP and GIF are allowed",
+      });
     }
 
     // Upload to Cloudinary
