@@ -1,0 +1,449 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Video Call</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: #0f172a;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        font-family: -apple-system, sans-serif;
+        overflow: hidden;
+      }
+      #container {
+        width: 100%;
+        height: 100vh;
+        position: relative;
+        background: #1a1a2e;
+        overflow: hidden;
+      }
+      #remote-video {
+        width: 100%;
+        height: 100%;
+        background: #1a1a2e;
+        position: relative;
+      }
+      #remote-video video {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+      }
+      #local-video {
+        position: absolute;
+        bottom: 80px;
+        right: 16px;
+        width: 25%;
+        height: 20%;
+        border-radius: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.4);
+        background: #1e1e2e;
+        overflow: hidden;
+        z-index: 10;
+        min-width: 100px;
+        min-height: 140px;
+      }
+      #local-video video {
+        width: 100% !important;
+        height: 100% !important;
+        object-fit: cover !important;
+        transform: scaleX(-1);
+      }
+      #controls {
+        position: absolute;
+        bottom: 20px;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: center;
+        gap: 20px;
+        padding: 16px 20px;
+        background: rgba(15, 23, 42, 0.9);
+        z-index: 20;
+      }
+      .control-btn {
+        width: 56px;
+        height: 56px;
+        border-radius: 28px;
+        border: none;
+        background: #2d2d44;
+        color: white;
+        font-size: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        touch-action: manipulation;
+        user-select: none;
+      }
+      .control-btn:active {
+        transform: scale(0.95);
+      }
+      .control-btn.active {
+        background: #dc2626;
+      }
+      .end-btn {
+        width: 64px;
+        height: 64px;
+        border-radius: 32px;
+        border: none;
+        background: #dc2626;
+        color: white;
+        font-size: 28px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .end-btn:active {
+        transform: scale(0.95);
+      }
+      #status {
+        position: absolute;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 14px;
+        padding: 8px 16px;
+        z-index: 5;
+        background: rgba(0, 0, 0, 0.3);
+        border-radius: 8px;
+        text-align: center;
+        max-width: 80%;
+      }
+      #loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-size: 16px;
+        z-index: 15;
+        text-align: center;
+      }
+      #loading .spinner {
+        display: inline-block;
+        width: 40px;
+        height: 40px;
+        border: 4px solid rgba(255, 255, 255, 0.1);
+        border-radius: 50%;
+        border-top-color: #ffffff;
+        animation: spin 1s ease-in-out infinite;
+        margin-bottom: 12px;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      #caller-name {
+        position: absolute;
+        bottom: 50%;
+        left: 50%;
+        transform: translate(-50%, 50%);
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 20px;
+        font-weight: 600;
+        z-index: 5;
+        text-align: center;
+        padding: 0 20px;
+      }
+      #debug-container {
+        position: absolute;
+        bottom: 160px;
+        left: 10px;
+        right: 10px;
+        z-index: 30;
+        background: rgba(0, 0, 0, 0.85);
+        border-radius: 8px;
+        padding: 8px;
+        max-height: 120px;
+        overflow-y: auto;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      #debug-container .debug-line {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 10px;
+        font-family: monospace;
+        padding: 2px 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      #debug-container .debug-line.error {
+        color: #ef4444;
+      }
+      #debug-container .debug-line.success {
+        color: #22c55e;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="remote-video"></div>
+      <div id="local-video"></div>
+      <div id="caller-name">Loading...</div>
+      <div id="status">Loading...</div>
+      <div id="loading">
+        <div class="spinner"></div>
+        <div>Loading...</div>
+      </div>
+      <div id="debug-container"></div>
+      <div id="controls">
+        <button class="control-btn" id="muteBtn">🎤</button>
+        <button class="control-btn" id="videoBtn">📹</button>
+        <button class="end-btn" id="endBtn">📞</button>
+      </div>
+    </div>
+
+    <script>
+      // ── Get parameters from URL ──────────────────────────────────────
+      const urlParams = new URLSearchParams(window.location.search);
+      const APP_ID = urlParams.get("appId") || "";
+      const CHANNEL = urlParams.get("channel") || "";
+      const TOKEN = urlParams.get("token") || "";
+      const CALLER_NAME = urlParams.get("callerName") || "Remote User";
+      const BOOKING_ID = urlParams.get("bookingId") || "";
+
+      // ── Debug Logger ──────────────────────────────────────────────────
+      const debugContainer = document.getElementById("debug-container");
+      const statusEl = document.getElementById("status");
+      const loadingEl = document.getElementById("loading");
+      const callerNameEl = document.getElementById("caller-name");
+
+      function addDebugLine(message, type = "info") {
+        const line = document.createElement("div");
+        line.className = "debug-line " + type;
+        const timestamp = new Date().toLocaleTimeString();
+        line.textContent = "[" + timestamp + "] " + message;
+        debugContainer.appendChild(line);
+        debugContainer.scrollTop = debugContainer.scrollHeight;
+        console.log("[Agora]", message);
+      }
+
+      function updateStatus(text) {
+        statusEl.textContent = text;
+        addDebugLine("Status: " + text, "info");
+      }
+
+      callerNameEl.textContent = CALLER_NAME;
+      addDebugLine("🚀 Page loaded with params", "info");
+      addDebugLine("App ID: " + APP_ID.substring(0, 10) + "...", "info");
+      addDebugLine("Channel: " + CHANNEL, "info");
+
+      if (!APP_ID || !CHANNEL || !TOKEN) {
+        addDebugLine("❌ Missing parameters", "error");
+        updateStatus("Missing parameters");
+        loadingEl.style.display = "none";
+      }
+
+      let client = null;
+      let localAudioTrack = null;
+      let localVideoTrack = null;
+      let remoteUser = null;
+
+      // ── Load Agora SDK from trusted CDN (your server can proxy this) ──
+      function loadAgoraSDK() {
+        addDebugLine("Loading Agora SDK...", "info");
+
+        // Try loading from a CDN that might work
+        const script = document.createElement("script");
+        script.src =
+          "https://cdnjs.cloudflare.com/ajax/libs/agora-rtc-sdk-ng/4.17.0/agora-rtc-sdk-ng.min.js";
+        script.onload = function () {
+          if (typeof AgoraRTC !== "undefined") {
+            addDebugLine("✅ SDK loaded!", "success");
+            startCall();
+          } else {
+            addDebugLine("❌ SDK loaded but AgoraRTC undefined", "error");
+            loadAgoraSDKFallback();
+          }
+        };
+        script.onerror = function () {
+          addDebugLine("❌ Failed to load SDK from CDN", "error");
+          loadAgoraSDKFallback();
+        };
+        document.head.appendChild(script);
+      }
+
+      function loadAgoraSDKFallback() {
+        addDebugLine("Trying alternative CDN...", "info");
+
+        const script = document.createElement("script");
+        script.src =
+          "https://cdn.jsdelivr.net/npm/agora-rtc-sdk-ng@4.17.0/dist/agora-rtc-sdk-ng.min.js";
+        script.onload = function () {
+          if (typeof AgoraRTC !== "undefined") {
+            addDebugLine("✅ SDK loaded from fallback!", "success");
+            startCall();
+          } else {
+            addDebugLine("❌ Fallback also failed", "error");
+            loadingEl.style.display = "none";
+            updateStatus("SDK load failed");
+          }
+        };
+        script.onerror = function () {
+          addDebugLine("❌ All CDN attempts failed", "error");
+          loadingEl.style.display = "none";
+          updateStatus("SDK load failed");
+        };
+        document.head.appendChild(script);
+      }
+
+      // ── Start Call ─────────────────────────────────────────────────────
+      async function startCall() {
+        try {
+          addDebugLine("Starting call...", "info");
+          updateStatus("Initializing...");
+          loadingEl.style.display = "block";
+
+          if (typeof AgoraRTC === "undefined") {
+            throw new Error("Agora SDK not loaded");
+          }
+
+          client = AgoraRTC.createClient({ mode: "rtc", codec: "h264" });
+          addDebugLine("✅ Client created", "success");
+
+          client.on("user-published", async (user, mediaType) => {
+            addDebugLine("📢 Remote user published: " + user.uid, "info");
+            try {
+              await client.subscribe(user, mediaType);
+              if (mediaType === "video") {
+                const remoteContainer = document.getElementById("remote-video");
+                remoteContainer.innerHTML = "";
+                user.videoTrack.play(remoteContainer);
+                remoteUser = user;
+                updateStatus("Connected");
+                loadingEl.style.display = "none";
+                addDebugLine("✅ Remote video playing", "success");
+              }
+              if (mediaType === "audio") {
+                user.audioTrack.play();
+                addDebugLine("✅ Remote audio playing", "success");
+              }
+            } catch (err) {
+              addDebugLine("❌ Subscribe error: " + err.message, "error");
+            }
+          });
+
+          client.on("user-unpublished", (user) => {
+            addDebugLine("👋 Remote user unpublished: " + user.uid, "info");
+            document.getElementById("remote-video").innerHTML = "";
+            remoteUser = null;
+            updateStatus("Remote user left");
+          });
+
+          client.on("user-left", (user) => {
+            addDebugLine("🚪 Remote user left: " + user.uid, "info");
+            document.getElementById("remote-video").innerHTML = "";
+            remoteUser = null;
+            updateStatus("Remote user left");
+          });
+
+          client.on("connection-state-change", (curState, prevState) => {
+            addDebugLine(
+              "🔄 Connection: " + prevState + " -> " + curState,
+              "info",
+            );
+            updateStatus("Connection: " + curState);
+          });
+
+          addDebugLine("📡 Joining channel: " + CHANNEL, "info");
+          updateStatus("Joining channel...");
+          await client.join(APP_ID, CHANNEL, TOKEN, null);
+          addDebugLine("✅ Joined channel", "success");
+
+          addDebugLine("🎥 Creating tracks...", "info");
+          try {
+            localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+            addDebugLine("✅ Audio track created", "success");
+          } catch (e) {
+            addDebugLine("❌ Audio error: " + e.message, "error");
+          }
+          try {
+            localVideoTrack = await AgoraRTC.createCameraVideoTrack({
+              encoderConfig: "720p",
+            });
+            addDebugLine("✅ Video track created", "success");
+          } catch (e) {
+            addDebugLine("❌ Video error: " + e.message, "error");
+          }
+
+          if (localVideoTrack) {
+            document.getElementById("local-video").innerHTML = "";
+            localVideoTrack.play("local-video");
+            addDebugLine("✅ Local video playing", "success");
+          }
+
+          const tracks = [];
+          if (localAudioTrack) tracks.push(localAudioTrack);
+          if (localVideoTrack) tracks.push(localVideoTrack);
+
+          if (tracks.length > 0) {
+            addDebugLine(
+              "📤 Publishing " + tracks.length + " tracks...",
+              "info",
+            );
+            await client.publish(tracks);
+            addDebugLine("✅ Tracks published", "success");
+          }
+
+          updateStatus("Connected - Waiting for remote");
+          loadingEl.style.display = "none";
+          addDebugLine("✅ Call ready!", "success");
+
+          document
+            .getElementById("muteBtn")
+            .addEventListener("click", function () {
+              if (localAudioTrack) {
+                const muted = localAudioTrack.enabled;
+                localAudioTrack.setEnabled(!muted);
+                this.textContent = muted ? "🔇" : "🎤";
+                this.classList.toggle("active", !muted);
+              }
+            });
+
+          document
+            .getElementById("videoBtn")
+            .addEventListener("click", function () {
+              if (localVideoTrack) {
+                const off = localVideoTrack.enabled;
+                localVideoTrack.setEnabled(!off);
+                this.textContent = off ? "📹❌" : "📹";
+                this.classList.toggle("active", !off);
+              }
+            });
+
+          document
+            .getElementById("endBtn")
+            .addEventListener("click", function () {
+              addDebugLine("📞 Ending call...", "info");
+              if (window.ReactNativeWebView) {
+                window.ReactNativeWebView.postMessage("end_call");
+              }
+              if (localAudioTrack) localAudioTrack.close();
+              if (localVideoTrack) localVideoTrack.close();
+              if (client) client.leave();
+            });
+        } catch (error) {
+          addDebugLine("❌ Call error: " + error.message, "error");
+          updateStatus("❌ " + error.message);
+          loadingEl.style.display = "none";
+        }
+      }
+
+      // ── Start loading ─────────────────────────────────────────────────
+      loadAgoraSDK();
+    </script>
+  </body>
+</html>

@@ -39,6 +39,7 @@ import foundationRoutes from "./src/routes/foundation.routes.js";
 import giftCertificateRoutes from "./src/routes/giftCertificate.routes.js";
 import shelterRoutes from "./src/routes/shelter.routes.js";
 import userRoutes from "./src/routes/users.js";
+import path from "path";
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -134,6 +135,10 @@ app.use("/api/foundation", foundationRoutes);
 app.use("/api/gift-certificates", giftCertificateRoutes);
 app.use("/api/shelter", shelterRoutes);
 app.use("/api/users", userRoutes);
+// Serve the video call HTML
+app.get("/video-call", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "video-call.html"));
+});
 
 // ── Health check ──────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
