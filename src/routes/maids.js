@@ -153,5 +153,26 @@ router.post(
   },
 );
 
+// ─── Upload proof via base64 (for React Native) ─────────────────────
+router.post("/upload-proof-base64", requireAuth, async (req, res) => {
+  const { image, filename } = req.body;
+  if (!image) return res.status(400).json({ error: "No image provided" });
+
+  try {
+    const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+    const buffer = Buffer.from(base64Data, "base64");
+
+    const result = await uploadMediaToCloudinary(
+      buffer,
+      "image",
+      "deusizi/payment_proofs",
+    );
+    return res.json({ url: result.url });
+  } catch (err) {
+    console.error("[upload-proof-base64]", err);
+    return res.status(500).json({ error: "Upload failed: " + err.message });
+  }
+});
+
 // ─────────────────────────────────────────────
 export default router;

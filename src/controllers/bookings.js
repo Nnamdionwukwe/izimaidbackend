@@ -1529,3 +1529,36 @@ export const releaseEscrow = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
+
+// ─── Get maid bookings by maid ID (for customers viewing maid profile) ──
+export const getMaidBookings = async (req, res) => {
+  const { maidId } = req.params;
+  const { status, limit = 100 } = req.query;
+
+  try {
+    const conditions = [`b.maid_id = $1`];
+    const params = [maidId];
+
+    if (status) {
+      params.push(status);
+      conditions.push(`b.status = $${params.length}`);
+    }
+
+    const where = conditions.join(" AND ");
+
+    const { rows } = await req.db.query(
+      `SELECT b.id, b.status, b.service_date, b.duration_hours,
+              b.total_amount, b.created_at
+       FROM bookings b
+       WHERE ${where}
+       ORDER BY b.created_at DESC
+       LIMIT $${params.length + 1}`,
+      [...params, Number(limit)],
+    );
+
+    return res.json({ bookings: rows });
+  } catch (err) {
+    console.error("[bookings/getMaidBookings]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};

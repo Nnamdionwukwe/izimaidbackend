@@ -21,6 +21,7 @@ import {
   endVideoCall,
   getActiveCallForUser,
   releaseEscrow,
+  getMaidBookings,
 } from "../controllers/bookings.js";
 
 const router = Router();
@@ -45,6 +46,9 @@ router.patch(
 
 // ─── Video call specific routes (must come before /:id) ───────────────
 router.get("/active-call", requireAuth, getActiveCallForUser); // ← MOVED UP
+
+// ─── Get maid bookings (public) ──────────────────────────────────────
+router.get("/maid/:maidId", getMaidBookings);
 
 // ─── Core bookings ─────────────────────────────────────────────────────
 router.post("/", requireAuth, requireRole("customer"), createBooking);
