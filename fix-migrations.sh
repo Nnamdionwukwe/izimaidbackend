@@ -1,4 +1,59 @@
-// db/migrate_global.js - Fixed
+#!/bin/bash
+
+echo "🔧 Fixing migration scripts to use local database..."
+
+# Fix db/show_schema.js
+cat > db/show_schema.js << 'SCHEMA'
+// db/show_schema.js - Fixed to use local database
+import pg from "pg";
+import dotenv from "dotenv";
+dotenv.config();
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+});
+
+async function run() {
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query(`
+      SELECT 
+        t.table_name,
+        c.column_name,
+        c.data_type,
+        c.is_nullable,
+        c.column_default
+      FROM information_schema.tables t
+      JOIN information_schema.columns c ON c.table_name = t.table_name
+      WHERE t.table_schema = 'public'
+        AND t.table_type = 'BASE TABLE'
+      ORDER BY t.table_name, c.ordinal_position
+    `);
+
+    let current = "";
+    for (const row of rows) {
+      if (row.table_name !== current) {
+        current = row.table_name;
+        console.log(`\n── ${current.toUpperCase()} ──`);
+      }
+      console.log(
+        `  ${row.column_name} (${row.data_type}) ${row.is_nullable === "NO" ? "NOT NULL" : ""} ${row.column_default ? `DEFAULT ${row.column_default}` : ""}`,
+      );
+    }
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+run().catch(console.error);
+SCHEMA
+
+echo "✅ Fixed db/show_schema.js"
+
+# Fix db/migrate_global.js
+cat > db/migrate_global.js << 'GLOBAL'
+// db/migrate_global.js - Fixed to use local database
 import pg from "pg";
 import dotenv from "dotenv";
 dotenv.config();
@@ -149,3 +204,15 @@ async function run() {
   }
 }
 run().catch(console.error);
+GLOBAL
+
+echo "✅ Fixed db/migrate_global.js"
+
+# Now run the show_schema to see what we have
+node db/show_schema.js
+
+# Run the global migration
+echo -e "\n📦 Running global migration..."
+node db/migrate_global.js
+
+echo -e "\n✅ All fixes applied!"

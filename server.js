@@ -39,7 +39,7 @@ import foundationRoutes from "./src/routes/foundation.routes.js";
 import giftCertificateRoutes from "./src/routes/giftCertificate.routes.js";
 import shelterRoutes from "./src/routes/shelter.routes.js";
 import userRoutes from "./src/routes/users.js";
-import path from "path";
+
 
 import { transporter } from "./src/utils/mailer.js";
 
@@ -68,6 +68,7 @@ const allowedOrigins = [
   "http://142.93.13.254:3000",
   "https://deusizisparkle.com",
   "https://www.deusizisparkle.com",
+'https://api.deusizisparkle.com',
   process.env.CORS_ORIGIN,
 ].filter(Boolean);
 

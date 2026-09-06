@@ -1,9 +1,11 @@
 // db/migrate_payments_v2.js
 import pg from "pg";
+import dotenv from "dotenv";
+dotenv.config();
+
 const pool = new pg.Pool({
-  connectionString:
-    "postgresql://postgres:lFTWaNFqrAsULGNgOuwhZkrdjAIlHIMq@centerbeam.proxy.rlwy.net:46630/railway",
-  ssl: false,
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
 });
 
 async function run() {

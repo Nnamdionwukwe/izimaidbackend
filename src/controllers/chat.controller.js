@@ -223,7 +223,7 @@ export async function sendMessage(req, res) {
 
         if (recipientRows[0]) {
           // ── In-app notification ──
-          await notify(db, {
+          await notify(req.db, {
             userId: recipientId,
             type: "new_message",
             title: `New message from ${senderName}`,
@@ -344,7 +344,7 @@ export async function sendMediaMessage(req, res) {
         );
 
         if (recipientRows[0]) {
-          await notify(db, {
+          await notify(req.db, {
             userId: recipientId,
             type: "new_message",
             title: `New message from ${senderName}`,
@@ -795,7 +795,7 @@ export async function getOrCreateInquiry(req, res) {
     const { maidId } = req.params;
 
     // Verify maid exists
-    const { rows: maidRows } = await db.query(
+    const { rows: maidRows } = await req.db.query(
       `SELECT u.id, u.name FROM users u WHERE u.id = $1 AND u.role = 'maid' AND u.is_active = true`,
       [maidId],
     );
@@ -804,7 +804,7 @@ export async function getOrCreateInquiry(req, res) {
     }
 
     // Get or create inquiry conversation
-    let { rows } = await db.query(
+    let { rows } = await req.db.query(
       `SELECT * FROM conversations
        WHERE customer_id = $1 AND maid_id = $2 AND type = 'inquiry'
        LIMIT 1`,
@@ -812,7 +812,7 @@ export async function getOrCreateInquiry(req, res) {
     );
 
     if (!rows.length) {
-      const ins = await db.query(
+      const ins = await req.db.query(
         `INSERT INTO conversations
            (customer_id, maid_id, type, created_at, updated_at)
          VALUES ($1, $2, 'inquiry', now(), now())
@@ -825,7 +825,7 @@ export async function getOrCreateInquiry(req, res) {
     const conversation = rows[0];
 
     // Fetch messages
-    const { rows: messages } = await db.query(
+    const { rows: messages } = await req.db.query(
       `SELECT m.*,
               u.name   AS sender_name,
               u.role   AS sender_role,
@@ -840,14 +840,14 @@ export async function getOrCreateInquiry(req, res) {
     );
 
     // Mark read
-    await db.query(
+    await req.db.query(
       `UPDATE messages SET is_read = true
        WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
       [conversation.id, customerId],
     );
 
     const isCustomer = customerId === conversation.customer_id;
-    await db.query(
+    await req.db.query(
       `UPDATE conversations
        SET ${isCustomer ? "unread_customer = 0" : "unread_maid = 0"}
        WHERE id = $1`,
@@ -870,7 +870,7 @@ export async function getMaidInquiry(req, res) {
     const { customerId } = req.params;
 
     // Verify customer exists
-    const { rows: customerRows } = await db.query(
+    const { rows: customerRows } = await req.db.query(
       `SELECT id, name, avatar FROM users WHERE id = $1 AND role = 'customer'`,
       [customerId],
     );
@@ -879,7 +879,7 @@ export async function getMaidInquiry(req, res) {
     }
 
     // Maids can only READ existing inquiry conversations — customer must initiate
-    const { rows } = await db.query(
+    const { rows } = await req.db.query(
       `SELECT * FROM conversations
        WHERE customer_id = $1 AND maid_id = $2 AND type = 'inquiry'
        LIMIT 1`,
@@ -893,7 +893,7 @@ export async function getMaidInquiry(req, res) {
     const conversation = rows[0];
 
     // Fetch messages
-    const { rows: messages } = await db.query(
+    const { rows: messages } = await req.db.query(
       `SELECT m.*,
               u.name   AS sender_name,
               u.role   AS sender_role,
@@ -908,14 +908,14 @@ export async function getMaidInquiry(req, res) {
     );
 
     // Mark incoming messages as read for the maid
-    await db.query(
+    await req.db.query(
       `UPDATE messages
        SET is_read = true
        WHERE conversation_id = $1 AND sender_id != $2 AND is_read = false`,
       [conversation.id, maidId],
     );
 
-    await db.query(`UPDATE conversations SET unread_maid = 0 WHERE id = $1`, [
+    await req.db.query(`UPDATE conversations SET unread_maid = 0 WHERE id = $1`, [
       conversation.id,
     ]);
 

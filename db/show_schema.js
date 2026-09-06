@@ -1,9 +1,11 @@
-// scripts/show_schema.js
+// db/show_schema.js - Fixed
 import pg from "pg";
+import dotenv from "dotenv";
+dotenv.config();
+
 const pool = new pg.Pool({
-  connectionString:
-    "postgresql://postgres:lFTWaNFqrAsULGNgOuwhZkrdjAIlHIMq@centerbeam.proxy.rlwy.net:46630/railway",
-  ssl: false,
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
 });
 
 async function run() {
@@ -33,6 +35,7 @@ async function run() {
         `  ${row.column_name} (${row.data_type}) ${row.is_nullable === "NO" ? "NOT NULL" : ""} ${row.column_default ? `DEFAULT ${row.column_default}` : ""}`,
       );
     }
+    console.log(`\n✅ Total tables: ${rows.length ? new Set(rows.map(r => r.table_name)).size : 0}`);
   } finally {
     client.release();
     await pool.end();
