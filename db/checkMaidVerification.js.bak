@@ -1,12 +1,10 @@
 // db/checkMaidVerification.js
 import pg from "pg";
 
-import dotenv from "dotenv";
-dotenv.config();
-
 const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+  connectionString:
+    "postgresql://postgres:lFTWaNFqrAsULGNgOuwhZkrdjAIlHIMq@centerbeam.proxy.rlwy.net:46630/railway",
+  ssl: false,
 });
 
 const userId = process.argv[2];
