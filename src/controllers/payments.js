@@ -223,11 +223,12 @@ export const adminListCryptoPayments = async (req, res) => {
           b.id AS booking_id, b.service_date, b.address, b.total_amount,
           b.duration_hours,
           c.name AS customer_name, c.email AS customer_email,
-          m.name AS maid_name
+          COALESCE(mp.full_name, m.name) AS maid_name
        FROM payments p
        JOIN bookings b ON b.id = p.booking_id
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        WHERE p.gateway = 'crypto'
          AND p.crypto_status = ANY($1)
        ORDER BY p.id, p.created_at DESC
@@ -294,7 +295,7 @@ export const initializePayment = async (req, res) => {
       tx_ref: reference,
       amount: customerPays,
       currency: currency,
-      redirect_url: `${process.env.CLIENT_URL}/payment/verify?gateway=flutterwave&booking_id=${booking_id}`,
+      redirect_url: `${process.env.CLIENT_URL}/payment/verify?gateway=flutterwave&booking_id=${booking_id}&tx_ref=${reference}`,
       customer: {
         email: booking.email,
         name: booking.customer_name,
@@ -501,8 +502,59 @@ export const verifyPayment = async (req, res) => {
         `SELECT * FROM bookings WHERE id=$1`,
         [booking_id],
       );
+
+      // Send receipt to customer
       if (cr[0] && pr[0] && br[0])
         sendPaymentReceipt(cr[0], br[0], pr[0]).catch(console.error);
+
+      // Notify BOTH parties — in-app + email
+      const { rows: bkNotif } = await req.db.query(
+        `SELECT b.customer_id,
+                mp.user_id AS maid_user_id,
+                c.name AS customer_name, c.email AS customer_email,
+                COALESCE(mp.full_name, mu.name) AS maid_name,
+                COALESCE(mp.email, mu.email) AS maid_email
+         FROM bookings b
+         JOIN users c ON c.id = b.customer_id
+         JOIN maid_profiles mp ON mp.id = b.maid_id
+         LEFT JOIN users mu ON mu.id = mp.user_id
+         WHERE b.id = $1`,
+        [booking_id],
+      );
+
+      if (bkNotif[0]) {
+        const n = bkNotif[0];
+
+        // In-app + push to customer
+        await notify(req.db, {
+          userId: n.customer_id,
+          type: "payment_received",
+          title: "✅ Payment Successful",
+          body: "Your payment was confirmed. The maid will review and accept shortly.",
+          data: { booking_id },
+          action_url: `/bookings/${booking_id}`,
+          priority: "high",
+        });
+
+        // In-app + push + email to maid
+        if (n.maid_user_id) {
+          await notify(req.db, {
+            userId: n.maid_user_id,
+            type: "booking_created",
+            title: "💳 New Booking",
+            body: `${n.customer_name} just booked you. Check your bookings to accept.`,
+            data: { booking_id },
+            action_url: `/bookings/${booking_id}`,
+            priority: "high",
+            sendMail: () =>
+              sendNewBookingToMaid(
+                { name: n.maid_name, email: n.maid_email },
+                br[0],
+                { name: n.customer_name, email: n.customer_email },
+              ),
+          });
+        }
+      }
 
       return res.json({
         message: "payment verified",
@@ -583,10 +635,13 @@ export const flutterwaveWebhook = async (req, res) => {
 
         // Notifications
         const { rows: bkN } = await req.db.query(
-          `SELECT b.maid_id, b.customer_id, c.name AS customer_name, m.name AS maid_name
+          `SELECT b.customer_id, mp.user_id AS maid_user_id,
+                  c.name AS customer_name,
+                  COALESCE(mp.full_name, m.name) AS maid_name
            FROM bookings b
            JOIN users c ON c.id = b.customer_id
-           JOIN users m ON m.id = b.maid_id
+           JOIN maid_profiles mp ON mp.id = b.maid_id
+           LEFT JOIN users m ON m.id = mp.user_id
            WHERE b.id = $1`,
           [payment.booking_id],
         );
@@ -600,15 +655,17 @@ export const flutterwaveWebhook = async (req, res) => {
             action_url: `/bookings/${payment.booking_id}`,
             priority: "high",
           });
-          await notify(req.db, {
-            userId: bkN[0].maid_id,
-            type: "booking_created",
-            title: "💳 New Booking",
-            body: `${bkN[0].customer_name} just booked you. Check your bookings to accept.`,
-            data: { booking_id: payment.booking_id },
-            action_url: `/bookings/${payment.booking_id}`,
-            priority: "high",
-          });
+          if (bkN[0].maid_user_id) {
+            await notify(req.db, {
+              userId: bkN[0].maid_user_id,
+              type: "booking_created",
+              title: "💳 New Booking",
+              body: `${bkN[0].customer_name} just booked you. Check your bookings to accept.`,
+              data: { booking_id: payment.booking_id },
+              action_url: `/bookings/${payment.booking_id}`,
+              priority: "high",
+            });
+          }
         }
 
         // Send receipt email
@@ -655,11 +712,14 @@ export const adminApproveBooking = async (req, res) => {
       `SELECT p.*, b.status AS booking_status,
               b.maid_id, b.customer_id, b.service_date, b.address, b.duration_hours,
               c.name AS customer_name, c.email AS customer_email,
-              m.name AS maid_name,     m.email AS maid_email
+              COALESCE(mp.full_name, m.name) AS maid_name,
+              COALESCE(mp.email, m.email) AS maid_email,
+              mp.user_id AS maid_user_id
        FROM payments p
        JOIN bookings b ON b.id = p.booking_id
-       JOIN users c    ON c.id = b.customer_id
-       JOIN users m    ON m.id = b.maid_id
+       JOIN users c ON c.id = b.customer_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        WHERE p.booking_id = $1 AND p.status = 'success'`,
       [booking_id],
     );
@@ -680,16 +740,24 @@ export const adminApproveBooking = async (req, res) => {
     await req.db.query(
       `INSERT INTO maid_payouts (maid_id,booking_id,payment_id,amount,currency,status)
        VALUES ($1,$2,$3,$4,$5,'escrow')`,
-      [pmt.maid_id, booking_id, pmt.id, pmt.maid_payout, pmt.currency || "NGN"],
+      [
+        pmt.maid_user_id,
+        booking_id,
+        pmt.id,
+        pmt.maid_payout,
+        pmt.currency || "NGN",
+      ],
     );
-    await notify(req.db, {
-      userId: pmt.maid_id,
-      type: "booking_approved",
-      title: "✅ Booking Approved",
-      body: `Your booking has been approved by admin. Payment is in escrow.`,
-      data: { booking_id },
-      action_url: `/bookings/${booking_id}`,
-    });
+    if (pmt.maid_user_id) {
+      await notify(req.db, {
+        userId: pmt.maid_user_id,
+        type: "booking_approved",
+        title: "✅ Booking Approved",
+        body: `Your booking has been approved by admin. Payment is in escrow.`,
+        data: { booking_id },
+        action_url: `/bookings/${booking_id}`,
+      });
+    }
     await notify(req.db, {
       userId: pmt.customer_id,
       type: "booking_approved",
@@ -791,9 +859,7 @@ export const adminRejectBooking = async (req, res) => {
   }
 };
 
-// ── 9–16: Admin, maid, and listing functions (unchanged) ─────────────
-// All functions below remain exactly as before – no changes needed.
-
+// ── 9–16: Admin, maid, and listing functions ─────────────────────────
 export const adminVerifyBankTransfer = async (req, res) => {
   const { payment_id } = req.params;
   const { approved, notes } = req.body;
@@ -997,14 +1063,17 @@ export const listPendingPayments = async (req, res) => {
     const { rows } = await req.db.query(
       `SELECT DISTINCT ON (b.id) b.id AS booking_id, b.status AS booking_status, b.service_date, b.total_amount,
           b.address, b.duration_hours, b.created_at,
-          c.name AS customer_name, c.email AS customer_email, m.name AS maid_name,
+          c.name AS customer_name, c.email AS customer_email,
+          COALESCE(mp.full_name, m.name) AS maid_name,
           p.id AS payment_id, p.status AS payment_status, p.gateway,
           p.paystack_reference, p.stripe_payment_id, p.bank_transfer_ref,
           p.bank_transfer_proof, p.platform_fee, p.maid_payout, p.paid_at,
           p.currency
    FROM bookings b
-   JOIN users c ON c.id=b.customer_id JOIN users m ON m.id=b.maid_id
-   JOIN payments p ON p.booking_id=b.id
+   JOIN users c ON c.id = b.customer_id
+   JOIN maid_profiles mp ON mp.id = b.maid_id
+   LEFT JOIN users m ON m.id = mp.user_id
+   JOIN payments p ON p.booking_id = b.id
    WHERE ${conditions.join(" AND ")}
    ORDER BY b.id, p.paid_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
@@ -1026,9 +1095,6 @@ export const getPayment = async (req, res) => {
          AND (b.customer_id = $2 OR mp.user_id = $2 OR $3 = 'admin')`,
       [req.params.booking_id, req.user.id, req.user.role],
     );
-    // Return 200 with null payment when no row exists yet. The frontend
-    // polls this endpoint before the payment is created; a 404 would log
-    // an error on every poll.
     return res.json({ payment: rows[0] || null });
   } catch (err) {
     console.error("[payments/getPayment]", err);
@@ -1064,10 +1130,12 @@ export const listCustomerPayments = async (req, res) => {
               p.paystack_reference, p.stripe_payment_id, p.bank_transfer_ref,
               b.id AS booking_id, b.service_date, b.address,
               b.duration_hours, b.total_amount, b.status AS booking_status,
-              m.name AS maid_name, m.avatar AS maid_avatar
+              COALESCE(mp.full_name, m.name) AS maid_name,
+              COALESCE(mp.avatar_url, m.avatar) AS maid_avatar
        FROM payments p
        JOIN bookings b ON b.id = p.booking_id
-       JOIN users m    ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        WHERE ${conditions.join(" AND ")}
        ORDER BY p.created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -1103,11 +1171,12 @@ export const adminListBankTransfers = async (req, res) => {
               b.id AS booking_id, b.service_date, b.address, b.total_amount,
               b.duration_hours,
               c.name AS customer_name, c.email AS customer_email,
-              m.name AS maid_name
+              COALESCE(mp.full_name, m.name) AS maid_name
        FROM payments p
        JOIN bookings b ON b.id = p.booking_id
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        WHERE p.gateway = 'bank_transfer'
          AND p.bank_transfer_status = ANY($1)
        ORDER BY p.id, p.created_at DESC
