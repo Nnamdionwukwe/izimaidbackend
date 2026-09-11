@@ -15,10 +15,16 @@ export async function getOrCreateConversation(req, res) {
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    // ── Step 1: fetch the raw booking row first ──────────────────────
-    const rawBooking = await db.query(`SELECT * FROM bookings WHERE id = $1`, [
-      bookingId,
-    ]);
+    // ── Step 1: fetch the booking AND resolve the maid's users.id ────
+    // bookings.customer_id = users.id (the customer)
+    // bookings.maid_id     = maid_profiles.id → resolve to maid_profiles.user_id
+    const rawBooking = await db.query(
+      `SELECT b.*, mp.user_id AS maid_user_id
+       FROM bookings b
+       LEFT JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1`,
+      [bookingId],
+    );
 
     if (rawBooking.rows.length === 0) {
       return res.status(404).json({ error: "Booking not found" });
@@ -26,12 +32,19 @@ export async function getOrCreateConversation(req, res) {
 
     const raw = rawBooking.rows[0];
 
-    // ── Step 2: both IDs are direct user IDs (confirmed from booking controller) ──
-    // bookings.customer_id = users.id  (the customer)
-    // bookings.maid_id     = users.id  (the maid's user account)
-    // Normalize to lowercase strings to avoid UUID case/type mismatches
+    if (!raw.maid_user_id) {
+      console.error(
+        "[chat] booking has no maid_profiles row — dangling maid_id:",
+        raw.maid_id,
+      );
+      return res.status(422).json({
+        error: "Booking is malformed — assigned maid no longer exists",
+      });
+    }
+
+    // Normalize UUIDs to lowercase for comparison
     const customerId = String(raw.customer_id).toLowerCase().trim();
-    const maidUserId = String(raw.maid_id).toLowerCase().trim();
+    const maidUserId = String(raw.maid_user_id).toLowerCase().trim();
     const requesterId = String(userId).toLowerCase().trim();
 
     // ── Step 3: auth check ────────────────────────────────────────────
@@ -40,7 +53,6 @@ export async function getOrCreateConversation(req, res) {
       requesterId !== customerId &&
       requesterId !== maidUserId
     ) {
-      // Surface debug info in development so you can diagnose mismatches
       console.error("[chat] 403 debug:", {
         requesterId,
         customerId,
@@ -99,7 +111,6 @@ export async function getOrCreateConversation(req, res) {
          m.created_at,
          m.deleted_at,
          m.deleted_by,
-         -- Regular users see a placeholder for deleted messages
          CASE WHEN m.deleted_at IS NOT NULL THEN NULL      ELSE m.media_url   END AS media_url,
          CASE WHEN m.deleted_at IS NOT NULL THEN NULL      ELSE m.media_type  END AS media_type,
          CASE WHEN m.deleted_at IS NOT NULL THEN 'deleted' ELSE m.content     END AS content,
@@ -136,10 +147,9 @@ export async function getOrCreateConversation(req, res) {
       messages: messagesResult.rows,
     });
   } catch (err) {
-    // Log the full error so it shows in your backend terminal
     console.error("[chat] getOrCreateConversation error:", err.message);
     console.error(err.stack);
-    res.status(500).json({ error: err.message }); // surface real error in dev
+    res.status(500).json({ error: err.message });
   }
 }
 
@@ -915,9 +925,10 @@ export async function getMaidInquiry(req, res) {
       [conversation.id, maidId],
     );
 
-    await req.db.query(`UPDATE conversations SET unread_maid = 0 WHERE id = $1`, [
-      conversation.id,
-    ]);
+    await req.db.query(
+      `UPDATE conversations SET unread_maid = 0 WHERE id = $1`,
+      [conversation.id],
+    );
 
     return res.json({
       conversation: {
