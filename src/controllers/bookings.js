@@ -39,6 +39,135 @@ async function fetchBookingWithUsers(db, bookingId) {
   return rows[0] || null;
 }
 
+// ─── Create booking ───────────────────────────────────────────────────
+export const createBooking = async (req, res) => {
+  const {
+    maid_id,
+    service_date,
+    duration_hours,
+    duration_qty,
+    address,
+    notes,
+    rate_type = "hourly",
+    total_override,
+  } = req.body;
+
+  if (!maid_id || !service_date || !duration_hours || !address) {
+    return res.status(400).json({
+      error: "maid_id, service_date, duration_hours, address are required",
+    });
+  }
+
+  const validRateTypes = ["hourly", "daily", "weekly", "monthly", "custom"];
+  if (!validRateTypes.includes(rate_type)) {
+    return res.status(400).json({
+      error: `rate_type must be one of: ${validRateTypes.join(", ")}`,
+    });
+  }
+
+  if (
+    rate_type !== "hourly" &&
+    (duration_qty === undefined || Number(duration_qty) <= 0)
+  ) {
+    return res.status(400).json({
+      error: `duration_qty is required for rate_type '${rate_type}'`,
+    });
+  }
+
+  try {
+    const { rows: maidRows } = await req.db.query(
+      `SELECT mp.id as profile_id, mp.currency,
+              mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
+              mp.rate_monthly, mp.rate_custom, mp.is_available,
+              u.is_active, u.name AS maid_name, u.email AS maid_email
+       FROM maid_profiles mp
+       JOIN users u ON u.id = mp.user_id
+       WHERE mp.user_id = $1 OR mp.id = $1`,
+      [maid_id],
+    );
+
+    if (!maidRows.length) {
+      return res.status(404).json({ error: "maid not found" });
+    }
+
+    const maid = maidRows[0];
+
+    if (!maid.is_available || !maid.is_active) {
+      return res.status(409).json({ error: "maid is not available" });
+    }
+
+    let rate = 0;
+    switch (rate_type) {
+      case "hourly":
+        rate = Number(maid.rate_hourly || maid.hourly_rate || 0);
+        break;
+      case "daily":
+        rate = Number(maid.rate_daily || 0);
+        break;
+      case "weekly":
+        rate = Number(maid.rate_weekly || 0);
+        break;
+      case "monthly":
+        rate = Number(maid.rate_monthly || 0);
+        break;
+      case "custom":
+        if (maid.rate_custom && typeof maid.rate_custom === "object") {
+          const values = Object.values(maid.rate_custom);
+          rate = Number(values[0] || 0);
+        }
+        break;
+    }
+
+    let total_amount;
+
+    if (total_override && Number(total_override) > 0) {
+      total_amount = Number(total_override);
+    } else {
+      if (rate === 0) {
+        return res.status(400).json({
+          error: `maid has not set a ${rate_type} rate`,
+        });
+      }
+
+      const qty = Number(duration_qty || 1);
+
+      if (rate_type === "hourly") {
+        total_amount = rate * Number(duration_hours);
+      } else {
+        total_amount = rate * qty;
+      }
+    }
+
+    // ── Freeze the maid's currency at booking time ───────────────────
+    const frozenCurrency = maid.currency || "NGN";
+
+    const { rows } = await req.db.query(
+      `INSERT INTO bookings
+         (customer_id, maid_id, service_date, duration_hours,
+          duration_qty, address, notes, total_amount, rate_type, status, currency)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'awaiting_payment', $10)
+       RETURNING *`,
+      [
+        req.user.id,
+        maidRows[0].profile_id,
+        service_date,
+        Number(duration_hours),
+        Number(duration_qty || 1),
+        address,
+        notes || null,
+        total_amount,
+        rate_type,
+        frozenCurrency,
+      ],
+    );
+
+    return res.status(201).json({ booking: rows[0] });
+  } catch (err) {
+    console.error("[bookings/createBooking]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
 // ─── List bookings ────────────────────────────────────────────────────
 export const listBookings = async (req, res) => {
   const { status, page = 1, limit = 20 } = req.query;
@@ -561,6 +690,78 @@ export const updateLocation = async (req, res) => {
     return res.json({ success: true, recorded_at: new Date() });
   } catch (err) {
     console.error("[bookings/updateLocation]", err);
+    return res.status(500).json({ error: "internal server error" });
+  }
+};
+
+// ─── Get single booking ───────────────────────────────────────────────
+export const getBooking = async (req, res) => {
+  try {
+    const booking = await fetchBookingWithUsers(req.db, req.params.id);
+    if (!booking) return res.status(404).json({ error: "booking not found" });
+
+    const isOwner =
+      booking.customer_id === req.user.id ||
+      booking.maid_user_id === req.user.id;
+    if (!isOwner && req.user.role !== "admin") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    // ── Attach emergency contacts (shown during active/in_progress jobs) ──
+    let emergencyContacts = [];
+    if (["confirmed", "in_progress"].includes(booking.status)) {
+      const { rows: ec } = await req.db.query(
+        `SELECT ec.name, ec.phone, ec.relationship
+ FROM emergency_contacts ec
+ WHERE ec.user_id = $1
+ ORDER BY ec.is_primary DESC`,
+        [
+          req.user.id === booking.customer_id
+            ? booking.maid_user_id
+            : booking.customer_id,
+        ],
+      );
+      emergencyContacts = ec;
+    }
+
+    // ── Latest location ────────────────────────────────────────────
+    let latestLocation = null;
+    if (["confirmed", "in_progress", "completed"].includes(booking.status)) {
+      const { rows: locRows } = await req.db.query(
+        `SELECT lat, lng, recorded_at FROM booking_locations
+         WHERE booking_id = $1 ORDER BY recorded_at DESC LIMIT 1`,
+        [booking.id],
+      );
+      latestLocation = locRows[0] || null;
+    }
+
+    // ── Active SOS ─────────────────────────────────────────────────
+    const { rows: sosRows } = await req.db.query(
+      `SELECT sa.*, u.name as triggered_by_name
+       FROM sos_alerts sa
+       JOIN users u ON u.id = sa.triggered_by
+       WHERE sa.booking_id = $1 AND sa.status = 'active'`,
+      [booking.id],
+    );
+
+    const { rows: reviewRows } = await req.db.query(
+      `SELECT r.rating, r.comment, r.created_at, u.name AS customer_name
+       FROM reviews r
+       JOIN users u ON u.id = r.customer_id
+       WHERE r.booking_id = $1
+       LIMIT 1`,
+      [booking.id],
+    );
+
+    return res.json({
+      booking,
+      emergency_contacts: emergencyContacts,
+      latest_location: latestLocation,
+      active_sos: sosRows,
+      review: reviewRows[0] || null,
+    });
+  } catch (err) {
+    console.error("[bookings/getBooking]", err);
     return res.status(500).json({ error: "internal server error" });
   }
 };
