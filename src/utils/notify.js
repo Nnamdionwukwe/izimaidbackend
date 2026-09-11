@@ -3,19 +3,24 @@
 // Used by ALL controllers — never call sendEmail directly from controllers,
 // always go through notify() so preferences are respected
 
-import admin from "firebase-admin";
+import { initializeApp, cert } from "firebase-admin/app";
+import { getMessaging } from "firebase-admin/messaging";
 
-// ── Initialize Firebase Admin SDK ──
 let firebaseApp = null;
 
 function initFirebase() {
   if (firebaseApp) return firebaseApp;
 
   try {
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+    // Strip surrounding quotes if present, then convert literal \n to newlines
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY || "";
+    if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+      privateKey = privateKey.slice(1, -1);
+    }
+    privateKey = privateKey.replace(/\\n/g, "\n");
 
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert({
+    firebaseApp = initializeApp({
+      credential: cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         privateKey: privateKey,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -82,7 +87,7 @@ export async function sendPushNotification(db, notification) {
       },
     };
 
-    const response = await admin.messaging().sendEachForMulticast(message);
+    const response = await getMessaging().sendEachForMulticast(message);
 
     console.log(
       `✅ Push notifications sent: ${response.successCount} success, ${response.failureCount} failed`,
