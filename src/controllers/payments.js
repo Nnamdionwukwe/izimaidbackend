@@ -248,12 +248,12 @@ async function fetchBookingForPayment(db, bookingId, customerId) {
        b.id, b.customer_id, b.maid_id, b.status,
        b.total_amount, b.service_date, b.address, b.duration_hours, b.notes,
        u.email, u.name AS customer_name,
-       m.name AS maid_name, m.email AS maid_email,
-       mp.currency AS maid_currency
+       mp.full_name AS maid_name,
+       mp.email     AS maid_email,
+       mp.currency  AS maid_currency
      FROM bookings b
-     JOIN users u  ON u.id  = b.customer_id
-     JOIN users m  ON m.id  = b.maid_id
-     LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+     JOIN users u           ON u.id  = b.customer_id
+     JOIN maid_profiles mp  ON mp.id = b.maid_id
      WHERE b.id = $1 AND b.customer_id = $2 AND b.status = 'awaiting_payment'`,
     [bookingId, customerId],
   );
