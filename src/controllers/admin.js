@@ -717,13 +717,16 @@ export const listBookings = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.*,
+              b.currency AS booking_currency,
               c.name as customer_name, c.email as customer_email,
               c.avatar as customer_avatar, c.phone as customer_phone,
               COALESCE(mp.full_name, m.name) as maid_name,
               COALESCE(mp.email, m.email) as maid_email,
               COALESCE(mp.avatar_url, m.avatar) as maid_avatar,
               mp.user_id as maid_user_id,
+              mp.currency as maid_currency,
               p.status as payment_status, p.gateway, p.amount as payment_amount,
+              p.currency as payment_currency,
               p.platform_fee, p.maid_payout, p.paid_at,
               (SELECT COUNT(*) FROM sos_alerts WHERE booking_id = b.id AND status = 'active') as active_sos
        FROM bookings b
