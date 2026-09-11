@@ -22,7 +22,7 @@ export const getEarnings = async (req, res) => {
   if (currency) {
     params.push(currency.toUpperCase());
     conditions.push(
-      `COALESCE(p.currency, mp.currency, 'NGN') = $${params.length}`,
+      `COALESCE(p.currency, b.currency, mp.currency, 'NGN') = $${params.length}`,
     );
   }
 
@@ -55,7 +55,7 @@ export const getEarnings = async (req, res) => {
          b.notes,
          u.name   AS customer_name,
          u.avatar AS customer_avatar,
-         COALESCE(p.currency, mp.currency, 'NGN') AS currency
+         COALESCE(p.currency, b.currency, mp.currency, 'NGN') AS currency
        ${baseJoin}
        ${where}
        ORDER BY b.service_date DESC
@@ -65,7 +65,7 @@ export const getEarnings = async (req, res) => {
 
     const { rows: summaryRows } = await req.db.query(
       `SELECT
-         COALESCE(p.currency, mp.currency, 'NGN')  AS currency,
+         COALESCE(p.currency, b.currency, mp.currency, 'NGN')  AS currency,
          COUNT(*)                                   AS booking_count,
          COALESCE(SUM(b.total_amount),   0)         AS total_earned,
          COALESCE(AVG(b.total_amount),   0)         AS avg_per_booking,
@@ -78,7 +78,7 @@ export const getEarnings = async (req, res) => {
        WHERE mp.user_id = $1
          AND b.status  = 'completed'
          ${periodClause}
-       GROUP BY COALESCE(p.currency, mp.currency, 'NGN')
+       GROUP BY COALESCE(p.currency, b.currency, mp.currency, 'NGN')
        ORDER BY total_earned DESC`,
       [req.user.id],
     );
@@ -86,7 +86,7 @@ export const getEarnings = async (req, res) => {
     const { rows: monthly } = await req.db.query(
       `SELECT
          to_char(date_trunc('month', b.service_date), 'Mon YY') AS month,
-         COALESCE(p.currency, mp.currency, 'NGN')               AS currency,
+         COALESCE(p.currency, b.currency, mp.currency, 'NGN')               AS currency,
          COUNT(*)                                                AS bookings,
          COALESCE(SUM(b.total_amount), 0)                       AS earned
        FROM bookings b
@@ -97,7 +97,7 @@ export const getEarnings = async (req, res) => {
          AND b.service_date >= now() - interval '6 months'
          ${periodClause}
        GROUP BY date_trunc('month', b.service_date),
-                COALESCE(p.currency, mp.currency, 'NGN')
+                COALESCE(p.currency, b.currency, mp.currency, 'NGN')
        ORDER BY date_trunc('month', b.service_date) ASC`,
       [req.user.id],
     );
@@ -130,7 +130,7 @@ export const getEarningsStats = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT
-         COALESCE(p.currency, mp.currency, 'NGN')          AS currency,
+         COALESCE(p.currency, b.currency, mp.currency, 'NGN')          AS currency,
          COUNT(*)                                           AS total_bookings,
          COALESCE(SUM(b.total_amount),   0)                AS total_earned,
          COALESCE(AVG(b.total_amount),   0)                AS avg_per_booking,
@@ -146,7 +146,7 @@ export const getEarningsStats = async (req, res) => {
        JOIN maid_profiles mp ON mp.id = b.maid_id
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
        WHERE mp.user_id = $1 AND b.status = 'completed'
-       GROUP BY COALESCE(p.currency, mp.currency, 'NGN')
+       GROUP BY COALESCE(p.currency, b.currency, mp.currency, 'NGN')
        ORDER BY total_earned DESC`,
       [req.user.id],
     );

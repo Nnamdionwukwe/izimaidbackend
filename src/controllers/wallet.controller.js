@@ -21,17 +21,17 @@ async function ensureWallet(db, maidId, currency = "NGN") {
 // GET /api/wallet  — returns ALL currency balances for the maid
 export const getWallet = async (req, res) => {
   try {
-    // ── Ensure a wallet exists for this maid (NGN currency) ──────
+    // ── Ensure an NGN wallet exists for this maid ────────────────
     await req.db.query(
-      `INSERT INTO maid_wallets (maid_id, currency, available_balance, pending, total_earned, total_withdrawn)
+      `INSERT INTO maid_wallets (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
        VALUES ($1, 'NGN', 0, 0, 0, 0)
        ON CONFLICT (maid_id, currency) DO NOTHING`,
       [req.user.id],
     );
 
-    // ── Fetch all wallet rows ────────────────────────────────────────
+    // ── Fetch all existing wallet rows ───────────────────────────
     const { rows: wallets } = await req.db.query(
-      `SELECT currency, available_balance, pending,
+      `SELECT currency, available_balance, pending_balance,
               total_earned, total_withdrawn, updated_at
        FROM maid_wallets
        WHERE maid_id = $1
@@ -39,20 +39,20 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
-    // ── Calculate escrow pending with COUNT ─────────────────────────
+    // ── Escrow pending (with frozen booking currency preference) ─
     const { rows: escrowRows } = await req.db.query(
       `SELECT
-         COALESCE(p.currency, mp.currency, 'NGN') AS currency,
-         COALESCE(SUM(b.total_amount), 0)          AS escrow_amount,
-         COUNT(b.id)                               AS escrow_count
+         COALESCE(p.currency, b.currency, mp.currency, 'NGN') AS currency,
+         COALESCE(SUM(b.total_amount), 0)                      AS escrow_amount,
+         COUNT(b.id)                                           AS escrow_count
        FROM bookings b
-       LEFT JOIN payments      p  ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id   = b.maid_id
-       WHERE b.maid_id       = $1
-         AND b.status        = 'completed'
-         AND b.escrow_status = 'pending_release'
-         AND b.total_amount  > 0
-       GROUP BY COALESCE(p.currency, mp.currency, 'NGN')`,
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN payments p  ON p.booking_id = b.id AND p.status = 'success'
+       WHERE mp.user_id       = $1
+         AND b.status         = 'completed'
+         AND b.escrow_status  = 'pending_release'
+         AND b.total_amount   > 0
+       GROUP BY COALESCE(p.currency, b.currency, mp.currency, 'NGN')`,
       [req.user.id],
     );
 
@@ -64,17 +64,39 @@ export const getWallet = async (req, res) => {
       escrowCountMap[cur] = Number(row.escrow_count);
     }
 
-    // ── Build response ──────────────────────────────────────────────
-    const walletsWithEscrow = wallets.map((w) => ({
-      currency: w.currency,
-      available_balance: Number(w.available_balance),
-      pending_balance: Number(w.pending),
-      total_earned: Number(w.total_earned),
-      total_withdrawn: Number(w.total_withdrawn),
-      updated_at: w.updated_at,
-      escrow_pending: escrowMap[(w.currency || "NGN").toUpperCase()] || 0,
-      escrow_count: escrowCountMap[(w.currency || "NGN").toUpperCase()] || 0,
-    }));
+    // ── Build a lookup of existing wallets ───────────────────────
+    const walletByCur = new Map();
+    for (const w of wallets) {
+      walletByCur.set((w.currency || "NGN").toUpperCase(), w);
+    }
+
+    // ── Merge currencies: NGN + all wallets + all escrow currencies ──
+    const allCurrencies = new Set([
+      "NGN",
+      ...walletByCur.keys(),
+      ...Object.keys(escrowMap),
+    ]);
+
+    const walletsWithEscrow = Array.from(allCurrencies).map((cur) => {
+      const w = walletByCur.get(cur);
+      return {
+        currency: cur,
+        available_balance: Number(w?.available_balance || 0),
+        pending_balance: Number(w?.pending_balance || 0),
+        total_earned: Number(w?.total_earned || 0),
+        total_withdrawn: Number(w?.total_withdrawn || 0),
+        updated_at: w?.updated_at || null,
+        escrow_pending: escrowMap[cur] || 0,
+        escrow_count: escrowCountMap[cur] || 0,
+      };
+    });
+
+    // Sort: NGN first, then by total_earned DESC
+    walletsWithEscrow.sort((a, b) => {
+      if (a.currency === "NGN") return -1;
+      if (b.currency === "NGN") return 1;
+      return b.total_earned - a.total_earned;
+    });
 
     const primary = walletsWithEscrow[0] || {
       currency: "NGN",

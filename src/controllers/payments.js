@@ -7,9 +7,8 @@ import {
 import { notify } from "../utils/notify.js";
 
 const COINBASE_KEY = process.env.COINBASE_COMMERCE_API_KEY;
-// ── 4. Crypto payment via static Trust Wallet addresses ──────────────
 
-// Supported currencies with their wallet addresses (store in .env)
+// ── 4. Crypto payment via static Trust Wallet addresses ──────────────
 const CRYPTO_WALLETS = {
   BTC: process.env.CRYPTO_BTC_ADDRESS,
   ETH: process.env.CRYPTO_ETH_ADDRESS,
@@ -82,6 +81,9 @@ export const initializeCryptoPayment = async (req, res) => {
       Number(booking.total_amount),
     );
 
+    // ── Fiat currency is frozen on the booking ─────────────────────
+    const fiatCurrency = booking.currency || booking.maid_currency || "NGN";
+
     await req.db.query(
       `INSERT INTO payments
          (booking_id, customer_id, amount, currency, gateway,
@@ -91,7 +93,7 @@ export const initializeCryptoPayment = async (req, res) => {
         booking_id,
         req.user.id,
         customerPays,
-        booking.maid_currency || "NGN",
+        fiatCurrency,
         platformFee,
         maidPayout,
         currency,
@@ -195,7 +197,6 @@ export const adminVerifyCryptoPayment = async (req, res) => {
          WHERE id=$1 AND status='awaiting_payment'`,
         [payment.booking_id],
       );
-      // Optionally send notifications / email receipt
     }
 
     return res.json({
@@ -243,11 +244,13 @@ export const adminListCryptoPayments = async (req, res) => {
 };
 
 // ── Fetch booking for payment ─────────────────────────────────────────
+// Includes b.currency (frozen at booking time) for correct payment currency.
 async function fetchBookingForPayment(db, bookingId, customerId) {
   const { rows } = await db.query(
     `SELECT
        b.id, b.customer_id, b.maid_id, b.status,
        b.total_amount, b.service_date, b.address, b.duration_hours, b.notes,
+       b.currency,
        u.email, u.name AS customer_name,
        mp.full_name AS maid_name,
        mp.email     AS maid_email,
@@ -288,7 +291,9 @@ export const initializePayment = async (req, res) => {
     const { platformFee, maidPayout, customerPays } = calcFees(
       Number(booking.total_amount),
     );
-    const currency = booking.maid_currency || "NGN";
+
+    // ── Fiat currency is frozen on the booking ─────────────────────
+    const currency = booking.currency || booking.maid_currency || "NGN";
     const reference = `ds_${booking_id}_${Date.now()}`;
 
     const payload = {
@@ -326,7 +331,6 @@ export const initializePayment = async (req, res) => {
 
     const { tx_ref, link, payment_id } = flutterwaveRes.data;
 
-    // Store Flutterwave data in existing columns
     await req.db.query(
       `INSERT INTO payments
          (booking_id, customer_id, amount, currency, gateway,
@@ -376,6 +380,9 @@ export const initializeBankTransfer = async (req, res) => {
     const { platformFee, maidPayout, customerPays } = calcFees(
       Number(booking.total_amount),
     );
+
+    // ── Fiat currency frozen on the booking ────────────────────────
+    const fiatCurrency = booking.currency || booking.maid_currency || "NGN";
     const transferRef = `BT-${booking_id.slice(0, 8).toUpperCase()}-${Date.now()}`;
 
     await req.db.query(
@@ -387,7 +394,7 @@ export const initializeBankTransfer = async (req, res) => {
         booking_id,
         req.user.id,
         customerPays,
-        booking.maid_currency || "NGN",
+        fiatCurrency,
         transferRef,
         platformFee,
         maidPayout,
@@ -398,7 +405,7 @@ export const initializeBankTransfer = async (req, res) => {
       gateway: "bank_transfer",
       reference: transferRef,
       amount: customerPays,
-      currency: booking.maid_currency || "NGN",
+      currency: fiatCurrency,
       bank_details: {
         bank_name: process.env.BANK_NAME,
         account_number: process.env.BANK_ACCOUNT_NUMBER,
@@ -448,7 +455,6 @@ export const verifyPayment = async (req, res) => {
   const { reference, gateway } = req.query;
 
   try {
-    // ── Flutterwave ──────────────────────────────────────────────
     if (gateway === "flutterwave" && reference) {
       const flutterwaveRes = await flutterwaveRequest(
         "GET",
@@ -503,11 +509,9 @@ export const verifyPayment = async (req, res) => {
         [booking_id],
       );
 
-      // Send receipt to customer
       if (cr[0] && pr[0] && br[0])
         sendPaymentReceipt(cr[0], br[0], pr[0]).catch(console.error);
 
-      // Notify BOTH parties — in-app + email
       const { rows: bkNotif } = await req.db.query(
         `SELECT b.customer_id,
                 mp.user_id AS maid_user_id,
@@ -525,7 +529,6 @@ export const verifyPayment = async (req, res) => {
       if (bkNotif[0]) {
         const n = bkNotif[0];
 
-        // In-app + push to customer
         await notify(req.db, {
           userId: n.customer_id,
           type: "payment_received",
@@ -536,7 +539,6 @@ export const verifyPayment = async (req, res) => {
           priority: "high",
         });
 
-        // In-app + push + email to maid
         if (n.maid_user_id) {
           await notify(req.db, {
             userId: n.maid_user_id,
@@ -563,7 +565,6 @@ export const verifyPayment = async (req, res) => {
       });
     }
 
-    // ── Crypto (no active verification – redirect handled by Coinbase) ──
     if (gateway === "crypto") {
       return res.status(200).json({
         message:
@@ -633,7 +634,6 @@ export const flutterwaveWebhook = async (req, res) => {
 
         await client.query("COMMIT");
 
-        // Notifications
         const { rows: bkN } = await req.db.query(
           `SELECT b.customer_id, mp.user_id AS maid_user_id,
                   c.name AS customer_name,
@@ -668,7 +668,6 @@ export const flutterwaveWebhook = async (req, res) => {
           }
         }
 
-        // Send receipt email
         const { rows: cr } = await req.db.query(
           `SELECT u.name, u.email FROM users u JOIN bookings b ON b.customer_id=u.id WHERE b.id=$1`,
           [payment.booking_id],
@@ -808,7 +807,6 @@ export const adminRejectBooking = async (req, res) => {
         .json({ error: "booking not found or not pending" });
 
     let refundResult = { attempted: false };
-    // Flutterwave refund
     if (pmt.gateway === "flutterwave" && pmt.stripe_payment_id) {
       try {
         const r = await flutterwaveRequest(
@@ -829,7 +827,6 @@ export const adminRejectBooking = async (req, res) => {
         };
       }
     }
-    // Bank transfer refund – manual handling
     if (pmt.gateway === "bank_transfer") {
       refundResult = {
         attempted: true,
