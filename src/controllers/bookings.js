@@ -19,16 +19,18 @@ async function fetchBookingWithUsers(db, bookingId) {
     `SELECT b.*,
             c.name as customer_name, c.email as customer_email,
             c.avatar as customer_avatar, c.phone as customer_phone,
-            m.name as maid_name, m.email as maid_email,
-            m.avatar as maid_avatar,
-            mp.currency AS maid_currency,           -- ← ADD
+            COALESCE(mp.full_name, u.name) as maid_name,
+            COALESCE(mp.email, u.email) as maid_email,
+            COALESCE(mp.avatar_url, u.avatar) as maid_avatar,
+            mp.user_id AS maid_user_id,
+            mp.currency AS maid_currency,
             p.status as payment_status, p.paystack_reference,
             p.stripe_payment_id, p.amount as payment_amount,
-            p.currency AS payment_currency          -- ← ADD
+            p.currency AS payment_currency
      FROM bookings b
      JOIN users c ON c.id = b.customer_id
-     JOIN users m ON m.id = b.maid_id
-     LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id   -- ← ADD
+     JOIN maid_profiles mp ON mp.id = b.maid_id
+     LEFT JOIN users u ON u.id = mp.user_id
      LEFT JOIN payments p ON p.booking_id = b.id
      WHERE b.id = $1`,
     [bookingId],
@@ -76,12 +78,12 @@ export const createBooking = async (req, res) => {
   try {
     // ── Fetch maid details ──────────────────────────────────────
     const { rows: maidRows } = await req.db.query(
-      `SELECT mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
+      `SELECT mp.id as profile_id, mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
               mp.rate_monthly, mp.rate_custom, mp.is_available,
               u.is_active, u.name AS maid_name, u.email AS maid_email
        FROM maid_profiles mp
        JOIN users u ON u.id = mp.user_id
-       WHERE mp.user_id = $1`,
+       WHERE mp.user_id = $1 OR mp.id = $1`,
       [maid_id],
     );
 
@@ -149,7 +151,7 @@ export const createBooking = async (req, res) => {
        RETURNING *`,
       [
         req.user.id,
-        maid_id,
+        maidRows[0].profile_id, // Use the profile_id from maid_profiles
         service_date,
         Number(duration_hours),
         Number(duration_qty || 1),
@@ -180,7 +182,7 @@ export const listBookings = async (req, res) => {
   }
   if (req.user.role === "maid") {
     params.push(req.user.id);
-    conditions.push(`b.maid_id = $${params.length}`);
+    conditions.push(`mp.user_id = $${params.length}`);
     conditions.push(`b.status NOT IN ('awaiting_payment')`);
   }
   if (status) {
@@ -195,22 +197,22 @@ export const listBookings = async (req, res) => {
     const { rows } = await req.db.query(
       `SELECT DISTINCT ON (b.id)
         b.id, b.status, b.service_date, b.duration_hours,
-        b.duration_qty, b.rate_type,                         -- ← ADDED
+        b.duration_qty, b.rate_type,
         b.total_amount, b.address, b.notes, b.created_at, b.updated_at,
         b.checkout_at,
         c.name   AS customer_name,
         c.avatar AS customer_avatar,
-        m.id     AS maid_id,
-        m.name   AS maid_name,
-        m.avatar AS maid_avatar,
+        mp.user_id AS maid_id,
+        COALESCE(mp.full_name, u.name) AS maid_name,
+        COALESCE(mp.avatar_url, u.avatar) AS maid_avatar,
         mp.currency AS maid_currency,
         p.status    AS payment_status,
         p.currency  AS payment_currency
       FROM bookings b
-      JOIN users c ON c.id = b.customer_id
-      JOIN users m ON m.id = b.maid_id
-      LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-      LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
+      JOIN users c           ON c.id  = b.customer_id
+      JOIN maid_profiles mp  ON mp.id = b.maid_id
+      LEFT JOIN users u      ON u.id  = mp.user_id
+      LEFT JOIN payments p   ON p.booking_id = b.id AND p.status = 'success'
       ${where}
       ORDER BY b.id, b.created_at DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -230,7 +232,8 @@ export const getBooking = async (req, res) => {
     if (!booking) return res.status(404).json({ error: "booking not found" });
 
     const isOwner =
-      booking.customer_id === req.user.id || booking.maid_id === req.user.id;
+      booking.customer_id === req.user.id ||
+      booking.maid_user_id === req.user.id;
     if (!isOwner && req.user.role !== "admin") {
       return res.status(403).json({ error: "forbidden" });
     }
@@ -246,7 +249,7 @@ export const getBooking = async (req, res) => {
         // Show the OTHER party's emergency contacts
         [
           req.user.id === booking.customer_id
-            ? booking.maid_id
+            ? booking.maid_user_id
             : booking.customer_id,
         ],
       );
@@ -254,7 +257,6 @@ export const getBooking = async (req, res) => {
     }
 
     // ── Latest location (in_progress only) ────────────────────────
-    // Replace the latestLocation block in getBooking:
     let latestLocation = null;
     if (["confirmed", "in_progress", "completed"].includes(booking.status)) {
       const { rows: locRows } = await req.db.query(
@@ -331,6 +333,8 @@ export const updateStatus = async (req, res) => {
       extraParams = [reason || null];
     }
 
+    // Ownership check: b.maid_id is a maid_profiles.id, so compare against
+    // the maid_profiles row that belongs to this user (if role is maid)
     const queryParams = [
       status,
       req.params.id,
@@ -340,10 +344,18 @@ export const updateStatus = async (req, res) => {
     ];
 
     const { rows } = await req.db.query(
-      `UPDATE bookings
+      `UPDATE bookings b
        SET status = $1, updated_at = now() ${extraFields}
-       WHERE id = $2 AND (customer_id = $3 OR maid_id = $3 OR $4 = 'admin')
-       RETURNING *`,
+       FROM bookings b2
+       LEFT JOIN maid_profiles mp ON mp.id = b2.maid_id
+       WHERE b.id = b2.id
+         AND b.id = $2
+         AND (
+           b.customer_id = $3
+           OR mp.user_id = $3
+           OR $4 = 'admin'
+         )
+       RETURNING b.*`,
       queryParams,
     );
 
@@ -353,7 +365,7 @@ export const updateStatus = async (req, res) => {
         .json({ error: "booking not found or not authorized" });
     }
 
-    const booking = rows[0]; // ← booking defined HERE, AFTER the query
+    const booking = rows[0];
 
     // ── Credit maid wallet when booking completes ─────────────────
     if (status === "completed") {
@@ -364,13 +376,14 @@ export const updateStatus = async (req, res) => {
     }
 
     // ── Fetch both users for emails ───────────────────────────────
+    // booking.maid_id is a maid_profiles.id, so resolve to users via maid_profiles
     const { rows: userRows } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.role FROM users u
-       WHERE u.id = $1 OR u.id = $2`,
+       WHERE u.id = $1 OR u.id = (SELECT user_id FROM maid_profiles WHERE id = $2)`,
       [booking.customer_id, booking.maid_id],
     );
     const customer = userRows.find((u) => u.id === booking.customer_id);
-    const maid = userRows.find((u) => u.id === booking.maid_id);
+    const maid = userRows.find((u) => u.role === "maid");
 
     if (status === "confirmed" && customer && maid) {
       sendBookingConfirmation(customer, booking, maid).catch(console.error);
@@ -402,20 +415,23 @@ export const updateStatus = async (req, res) => {
 
 // ─── GPS Check-in ─────────────────────────────────────────────────────
 export const checkIn = async (req, res) => {
-  const { lat, lng } = req.body; // optional — GPS may fail on some devices
+  const { lat, lng } = req.body;
 
   try {
     const { rows } = await req.db.query(
-      `UPDATE bookings
+      `UPDATE bookings b
        SET checkin_at = now(),
            checkin_lat = $1,
            checkin_lng = $2,
            live_tracking_on = true,
            status = 'in_progress',
            updated_at = now()
-       WHERE id = $3 AND maid_id = $4
-         AND status = 'confirmed'
-       RETURNING *`,
+       FROM maid_profiles mp
+       WHERE b.id = $3
+         AND mp.id = b.maid_id
+         AND mp.user_id = $4
+         AND b.status = 'confirmed'
+       RETURNING b.*`,
       [lat || null, lng || null, req.params.id, req.user.id],
     );
 
@@ -428,10 +444,11 @@ export const checkIn = async (req, res) => {
     // Fetch maid name for the email
     const { rows: partyRows } = await req.db.query(
       `SELECT c.name AS customer_name, c.email AS customer_email,
-          m.name AS maid_name
+          COALESCE(mp.full_name, u.name) AS maid_name
    FROM bookings b
    JOIN users c ON c.id = b.customer_id
-   JOIN users m ON m.id = b.maid_id
+   JOIN maid_profiles mp ON mp.id = b.maid_id
+   LEFT JOIN users u ON u.id = mp.user_id
    WHERE b.id = $1`,
       [req.params.id],
     );
@@ -477,19 +494,22 @@ export const checkIn = async (req, res) => {
 
 // ─── GPS Check-out ────────────────────────────────────────────────────
 export const checkOut = async (req, res) => {
-  const { lat, lng } = req.body; // optional
+  const { lat, lng } = req.body;
 
   try {
-    // In checkOut controller, change the UPDATE to:
     const { rows } = await req.db.query(
-      `UPDATE bookings
+      `UPDATE bookings b
    SET checkout_at = now(),
-       checkout_lat = $3,        -- ← ADD
-       checkout_lng = $4,        -- ← ADD
+       checkout_lat = $3,
+       checkout_lng = $4,
        live_tracking_on = false,
        updated_at = now()
-   WHERE id = $1 AND maid_id = $2 AND status = 'in_progress'
-   RETURNING *`,
+   FROM maid_profiles mp
+   WHERE b.id = $1
+     AND mp.id = b.maid_id
+     AND mp.user_id = $2
+     AND b.status = 'in_progress'
+   RETURNING b.*`,
       [req.params.id, req.user.id, lat || null, lng || null],
     );
 
@@ -506,10 +526,11 @@ export const checkOut = async (req, res) => {
 
     const { rows: partyRows } = await req.db.query(
       `SELECT c.name AS customer_name, c.email AS customer_email,
-          m.name AS maid_name
+          COALESCE(mp.full_name, u.name) AS maid_name
    FROM bookings b
    JOIN users c ON c.id = b.customer_id
-   JOIN users m ON m.id = b.maid_id
+   JOIN maid_profiles mp ON mp.id = b.maid_id
+   LEFT JOIN users u ON u.id = mp.user_id
    WHERE b.id = $1`,
       [req.params.id],
     );
@@ -561,12 +582,15 @@ export const triggerSOS = async (req, res) => {
     const { rows: bookingRows } = await req.db.query(
       `SELECT b.id, b.customer_id, b.maid_id,
               c.name as customer_name, c.email as customer_email,
-              m.name as maid_name, m.email as maid_email
+              COALESCE(mp.full_name, u.name) as maid_name,
+              COALESCE(mp.email, u.email) as maid_email,
+              mp.user_id AS maid_user_id
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users u ON u.id = mp.user_id
        WHERE b.id = $1
-         AND (b.customer_id = $2 OR b.maid_id = $2)
+         AND (b.customer_id = $2 OR mp.user_id = $2)
          AND b.status IN ('confirmed','in_progress')`,
       [req.params.id, req.user.id],
     );
@@ -585,7 +609,7 @@ export const triggerSOS = async (req, res) => {
     const { rows: maidEmergency } = await req.db.query(
       `SELECT name, phone, email, relationship FROM emergency_contacts
        WHERE user_id = $1 ORDER BY is_primary DESC`,
-      [booking.maid_id],
+      [booking.maid_user_id],
     );
 
     function ecHtml(contacts, label) {
@@ -619,14 +643,12 @@ export const triggerSOS = async (req, res) => {
 
     const sos = rows[0];
 
-    // ✅ triggeredByName defined BEFORE it's used
     const triggeredByName =
       req.user.id === booking.customer_id
         ? booking.customer_name
         : booking.maid_name;
 
-    // ✅ Notify calls AFTER triggeredByName is defined
-    await notifyMany(req.db, [booking.customer_id, booking.maid_id], {
+    await notifyMany(req.db, [booking.customer_id, booking.maid_user_id], {
       type: "sos_triggered",
       title: "🚨 SOS Alert Triggered",
       body: `SOS triggered by ${triggeredByName}. Emergency contacts have been notified.`,
@@ -718,8 +740,10 @@ export const updateLocation = async (req, res) => {
   try {
     // Verify booking is in progress and belongs to this maid
     const { rows: bookingRows } = await req.db.query(
-      `SELECT id FROM bookings
-       WHERE id = $1 AND maid_id = $2 AND status = 'in_progress' AND live_tracking_on = true`,
+      `SELECT b.id FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1 AND mp.user_id = $2
+         AND b.status = 'in_progress' AND b.live_tracking_on = true`,
       [req.params.id, req.user.id],
     );
     if (!bookingRows.length) {
@@ -758,8 +782,11 @@ export const updateLocation = async (req, res) => {
 export const getJobLocation = async (req, res) => {
   try {
     const { rows: bookingRows } = await req.db.query(
-      `SELECT customer_id, maid_id, status, live_tracking_on
-       FROM bookings WHERE id = $1`,
+      `SELECT b.customer_id, b.maid_id, b.status, b.live_tracking_on,
+              mp.user_id AS maid_user_id
+       FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1`,
       [req.params.id],
     );
     if (!bookingRows.length)
@@ -767,7 +794,8 @@ export const getJobLocation = async (req, res) => {
 
     const booking = bookingRows[0];
     const isParticipant =
-      booking.customer_id === req.user.id || booking.maid_id === req.user.id;
+      booking.customer_id === req.user.id ||
+      booking.maid_user_id === req.user.id;
     if (!isParticipant && req.user.role !== "admin") {
       return res.status(403).json({ error: "forbidden" });
     }
@@ -826,12 +854,14 @@ export const getSOSAlerts = async (req, res) => {
               u.name as triggered_by_name, u.role as triggered_by_role,
               b.service_date, b.address as booking_address,
               c.name as customer_name, c.phone as customer_phone,
-              m.name as maid_name, m.phone as maid_phone
+              COALESCE(mp.full_name, mu.name) as maid_name,
+              COALESCE(mp.phone, mu.phone) as maid_phone
        FROM sos_alerts sa
        JOIN users u ON u.id = sa.triggered_by
        JOIN bookings b ON b.id = sa.booking_id
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users mu ON mu.id = mp.user_id
        WHERE sa.status = $1
        ORDER BY sa.created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -844,20 +874,20 @@ export const getSOSAlerts = async (req, res) => {
   }
 };
 
-// ─── Initiate video call ──────────────────────────────────────────────
-
 // ─── Initiate video call (Agora) ──────────────────────────────────────
 export const initiateVideoCall = async (req, res) => {
   try {
     const { rows: bookingRows } = await req.db.query(
       `SELECT b.*,
               c.name AS customer_name,
-              m.name AS maid_name
+              COALESCE(mp.full_name, mu.name) AS maid_name,
+              mp.user_id AS maid_user_id
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users mu ON mu.id = mp.user_id
        WHERE b.id = $1
-         AND (b.customer_id = $2 OR b.maid_id = $2)
+         AND (b.customer_id = $2 OR mp.user_id = $2)
          AND b.status IN ('confirmed', 'in_progress')`,
       [req.params.id, req.user.id],
     );
@@ -868,14 +898,11 @@ export const initiateVideoCall = async (req, res) => {
 
     const booking = bookingRows[0];
 
-    // ── Generate unique channel name ───────────────────────────────
     const channelName =
       booking.video_call_channel ||
       `deusizi-${booking.id.replace(/-/g, "").slice(0, 8)}-${crypto.randomBytes(3).toString("hex")}`.toLowerCase();
-    // ── Generate Agora token ───────────────────────────────────────
     const { token: agoraToken, appId } = generateAgoraToken(channelName);
 
-    // ── Persist to bookings ────────────────────────────────────────
     await req.db.query(
       `UPDATE bookings
        SET video_call_channel   = $1,
@@ -886,16 +913,14 @@ export const initiateVideoCall = async (req, res) => {
       [channelName, agoraToken, booking.id],
     );
 
-    // ── Determine caller / recipient names ─────────────────────────
     const isCallerCustomer = req.user.id === booking.customer_id;
     const callerName = isCallerCustomer
       ? booking.customer_name
       : booking.maid_name;
     const recipientId = isCallerCustomer
-      ? booking.maid_id
+      ? booking.maid_user_id
       : booking.customer_id;
 
-    // ── Send Expo push notification to the OTHER party ─────────────
     await sendPushToUsers(req.db, [recipientId], {
       title: "📹 Incoming Video Call",
       body: `${callerName} is calling you`,
@@ -928,10 +953,11 @@ export const initiateVideoCall = async (req, res) => {
 export const getVideoCallStatus = async (req, res) => {
   try {
     const { rows } = await req.db.query(
-      `SELECT video_call_channel, video_call_token, video_call_status,
-              video_call_started_at
-       FROM bookings
-       WHERE id = $1 AND (customer_id = $2 OR maid_id = $2)`,
+      `SELECT b.video_call_channel, b.video_call_token, b.video_call_status,
+              b.video_call_started_at
+       FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1 AND (b.customer_id = $2 OR mp.user_id = $2)`,
       [req.params.id, req.user.id],
     );
 
@@ -939,7 +965,6 @@ export const getVideoCallStatus = async (req, res) => {
 
     const b = rows[0];
 
-    // Re-generate a fresh token if channel exists
     let freshToken = null;
     let appId = null;
     if (b.video_call_channel) {
@@ -965,12 +990,15 @@ export const getVideoCallStatus = async (req, res) => {
 export const endVideoCall = async (req, res) => {
   try {
     const { rows: bookingRows } = await req.db.query(
-      `SELECT customer_id, maid_id, video_call_channel,
-              c.name AS customer_name, m.name AS maid_name
+      `SELECT b.customer_id, b.maid_id, b.video_call_channel,
+              c.name AS customer_name,
+              COALESCE(mp.full_name, mu.name) AS maid_name,
+              mp.user_id AS maid_user_id
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
-       WHERE b.id = $1 AND (b.customer_id = $2 OR b.maid_id = $2)`,
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users mu ON mu.id = mp.user_id
+       WHERE b.id = $1 AND (b.customer_id = $2 OR mp.user_id = $2)`,
       [req.params.id, req.user.id],
     );
 
@@ -988,10 +1016,9 @@ export const endVideoCall = async (req, res) => {
       [req.params.id],
     );
 
-    // Notify the other party the call ended
     const recipientId =
       req.user.id === booking.customer_id
-        ? booking.maid_id
+        ? booking.maid_user_id
         : booking.customer_id;
     const callerName =
       req.user.id === booking.customer_id
@@ -1017,7 +1044,6 @@ export const endVideoCall = async (req, res) => {
 };
 
 // ─── Check for any incoming call across user's active bookings ────────
-// Polled as a fallback when app is foregrounded (push handles background)
 export const getActiveCallForUser = async (req, res) => {
   try {
     const { rows } = await req.db.query(
@@ -1029,12 +1055,14 @@ export const getActiveCallForUser = async (req, res) => {
               b.maid_id,
               c.name   AS customer_name,
               c.avatar AS customer_avatar,
-              m.name   AS maid_name,
-              m.avatar AS maid_avatar
+              COALESCE(mp.full_name, mu.name) AS maid_name,
+              COALESCE(mp.avatar_url, mu.avatar) AS maid_avatar,
+              mp.user_id AS maid_user_id
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
-       WHERE (b.customer_id = $1 OR b.maid_id = $1)
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users mu ON mu.id = mp.user_id
+       WHERE (b.customer_id = $1 OR mp.user_id = $1)
          AND b.video_call_status = 'ringing'
          AND b.video_call_started_at > now() - interval '90 seconds'
        ORDER BY b.video_call_started_at DESC
@@ -1046,7 +1074,6 @@ export const getActiveCallForUser = async (req, res) => {
 
     const row = rows[0];
 
-    // Generate fresh Agora token for the recipient
     const { token: freshToken, appId } = generateAgoraToken(
       row.video_call_channel,
     );
@@ -1071,7 +1098,6 @@ export const getActiveCallForUser = async (req, res) => {
 };
 
 // ─── Save Expo push token for a user ──────────────────────────────────
-// POST /api/users/push-token   { token, platform }
 export const savePushToken = async (req, res) => {
   try {
     const { token, platform } = req.body;
@@ -1109,7 +1135,6 @@ export const setEmergencyContact = async (req, res) => {
     : `${phone_country_code}${phone.replace(/^0/, "")}`;
 
   try {
-    // If setting as primary, unset existing primary first
     if (is_primary) {
       await req.db.query(
         `UPDATE emergency_contacts SET is_primary = false WHERE user_id = $1`,
@@ -1160,7 +1185,7 @@ export const deleteEmergencyContact = async (req, res) => {
   }
 };
 
-// ─── Submit review (unchanged logic, kept here) ───────────────────────
+// ─── Submit review ────────────────────────────────────────────────────
 export const submitReview = async (req, res) => {
   const { rating, comment } = req.body;
   if (!rating || rating < 1 || rating > 5) {
@@ -1184,41 +1209,51 @@ export const submitReview = async (req, res) => {
       [booking.id, req.user.id, booking.maid_id, rating, comment || null],
     );
 
-    // ← Check FIRST before doing anything else
     if (!rows.length)
       return res.status(409).json({ error: "review already submitted" });
 
+    // booking.maid_id is a maid_profiles.id
     await req.db.query(
       `UPDATE maid_profiles SET
          rating = (SELECT AVG(rating) FROM reviews WHERE maid_id = $1),
          total_reviews = (SELECT COUNT(*) FROM reviews WHERE maid_id = $1)
-       WHERE user_id = $1`,
+       WHERE id = $1`,
       [booking.maid_id],
     );
 
     const { rows: maidRows } = await req.db.query(
-      `SELECT name, email FROM users WHERE id = $1`,
+      `SELECT u.name, u.email
+       FROM maid_profiles mp
+       JOIN users u ON u.id = mp.user_id
+       WHERE mp.id = $1`,
       [booking.maid_id],
     );
     const maid = maidRows[0];
 
-    // ← Notify ONCE only
-    await notify(req.db, {
-      userId: booking.maid_id,
-      type: "review_received",
-      title: "⭐ New Review",
-      body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
-      data: { booking_id: req.params.id, rating },
-      action_url: `/bookings/${req.params.id}`,
-      sendMail: maid
-        ? () =>
-            sendReviewReceivedEmail(
-              maid,
-              { rating, comment },
-              req.user.name || "A customer",
-            )
-        : undefined,
-    });
+    const { rows: maidUserRows } = await req.db.query(
+      `SELECT user_id FROM maid_profiles WHERE id = $1`,
+      [booking.maid_id],
+    );
+    const maidUserId = maidUserRows[0]?.user_id;
+
+    if (maidUserId) {
+      await notify(req.db, {
+        userId: maidUserId,
+        type: "review_received",
+        title: "⭐ New Review",
+        body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
+        data: { booking_id: req.params.id, rating },
+        action_url: `/bookings/${req.params.id}`,
+        sendMail: maid
+          ? () =>
+              sendReviewReceivedEmail(
+                maid,
+                { rating, comment },
+                req.user.name || "A customer",
+              )
+          : undefined,
+      });
+    }
 
     return res.status(201).json({ review: rows[0] });
   } catch (err) {
@@ -1232,7 +1267,6 @@ export const updateBookingStatus = async (req, res) => {
   const { id } = req.params;
   const { status, declined_reason, declined_by } = req.body;
 
-  // ── Valid transitions per role ────────────────────────────────────
   const MAID_ALLOWED = ["confirmed", "declined", "in_progress", "completed"];
   const CUSTOMER_ALLOWED = ["cancelled"];
   const ADMIN_ALLOWED = [
@@ -1257,14 +1291,16 @@ export const updateBookingStatus = async (req, res) => {
   }
 
   try {
-    // ── Fetch booking to verify ownership + current state ─────────
     const { rows: existing } = await req.db.query(
       `SELECT b.*,
               c.name AS customer_name, c.email AS customer_email,
-              m.name AS maid_name,     m.email AS maid_email
+              COALESCE(mp.full_name, u.name) AS maid_name,
+              COALESCE(mp.email, u.email) AS maid_email,
+              mp.user_id AS maid_user_id
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users u ON u.id = mp.user_id
        WHERE b.id = $1`,
       [id],
     );
@@ -1275,15 +1311,13 @@ export const updateBookingStatus = async (req, res) => {
 
     const booking = existing[0];
 
-    // ── Ownership check ───────────────────────────────────────────
-    if (req.user.role === "maid" && booking.maid_id !== req.user.id) {
+    if (req.user.role === "maid" && booking.maid_user_id !== req.user.id) {
       return res.status(403).json({ error: "not your booking" });
     }
     if (req.user.role === "customer" && booking.customer_id !== req.user.id) {
       return res.status(403).json({ error: "not your booking" });
     }
 
-    // ── Guard illegal transitions ─────────────────────────────────
     const TERMINAL = ["completed", "cancelled", "declined"];
     if (TERMINAL.includes(booking.status)) {
       return res.status(409).json({
@@ -1291,7 +1325,6 @@ export const updateBookingStatus = async (req, res) => {
       });
     }
 
-    // Customers can only cancel pending / confirmed bookings
     if (
       req.user.role === "customer" &&
       !["pending", "confirmed", "awaiting_payment"].includes(booking.status)
@@ -1301,13 +1334,12 @@ export const updateBookingStatus = async (req, res) => {
       });
     }
 
-    // ── Build dynamic UPDATE ──────────────────────────────────────
     const fields = ["status = $2", "updated_at = now()"];
     const params = [id, status];
 
     if (status === "declined" && declined_reason) {
       params.push(declined_reason);
-      fields.push(`notes = $${params.length}`); // store reason in notes
+      fields.push(`notes = $${params.length}`);
     }
 
     const { rows } = await req.db.query(
@@ -1324,8 +1356,6 @@ export const updateBookingStatus = async (req, res) => {
 
     const updated = rows[0];
 
-    // Notify the OTHER party about status changes
-    // confirmed
     if (status === "confirmed") {
       await notify(req.db, {
         userId: booking.customer_id,
@@ -1342,25 +1372,25 @@ export const updateBookingStatus = async (req, res) => {
             { name: booking.maid_name, email: booking.maid_email },
           ),
       });
-      // ALSO email the maid that they have a new booking
-      await notify(req.db, {
-        userId: booking.maid_id,
-        type: "booking_created",
-        title: "🎉 New Booking",
-        body: `You have a new confirmed booking with ${booking.customer_name}.`,
-        data: { booking_id: id },
-        action_url: `/bookings/${id}`,
-        priority: "high",
-        sendMail: () =>
-          sendNewBookingToMaid(
-            { name: booking.maid_name, email: booking.maid_email },
-            updated,
-            { name: booking.customer_name, email: booking.customer_email },
-          ),
-      });
+      if (booking.maid_user_id) {
+        await notify(req.db, {
+          userId: booking.maid_user_id,
+          type: "booking_created",
+          title: "🎉 New Booking",
+          body: `You have a new confirmed booking with ${booking.customer_name}.`,
+          data: { booking_id: id },
+          action_url: `/bookings/${id}`,
+          priority: "high",
+          sendMail: () =>
+            sendNewBookingToMaid(
+              { name: booking.maid_name, email: booking.maid_email },
+              updated,
+              { name: booking.customer_name, email: booking.customer_email },
+            ),
+        });
+      }
     }
 
-    // declined
     if (status === "declined") {
       await notify(req.db, {
         userId: booking.customer_id,
@@ -1379,12 +1409,11 @@ export const updateBookingStatus = async (req, res) => {
       });
     }
 
-    // cancelled
     if (status === "cancelled") {
       const otherUser =
         req.user.role === "customer"
           ? {
-              id: booking.maid_id,
+              id: booking.maid_user_id,
               name: booking.maid_name,
               email: booking.maid_email,
             }
@@ -1397,23 +1426,22 @@ export const updateBookingStatus = async (req, res) => {
         req.user.role === "customer"
           ? booking.customer_name
           : booking.maid_name;
-      await notify(req.db, {
-        userId: otherUser.id,
-        type: "booking_cancelled",
-        title: "🚫 Booking Cancelled",
-        body: `${cancellerName} cancelled the booking.`,
-        data: { booking_id: id },
-        action_url: `/bookings/${id}`,
-        sendMail: () =>
-          sendBookingCancelledEmail(otherUser, updated, cancellerName),
-      });
+
+      if (otherUser.id) {
+        await notify(req.db, {
+          userId: otherUser.id,
+          type: "booking_cancelled",
+          title: "🚫 Booking Cancelled",
+          body: `${cancellerName} cancelled the booking.`,
+          data: { booking_id: id },
+          action_url: `/bookings/${id}`,
+          sendMail: () =>
+            sendBookingCancelledEmail(otherUser, updated, cancellerName),
+        });
+      }
     }
 
-    // completed
-
-    // NEW — set escrow instead of crediting wallet immediately:
     if (status === "completed") {
-      // Put funds in escrow — customer must release before maid is paid
       await req.db.query(
         `UPDATE bookings SET escrow_status = 'pending_release' WHERE id = $1`,
         [id],
@@ -1434,14 +1462,16 @@ export const updateBookingStatus = async (req, res) => {
             updated,
           ),
       });
-      await notify(req.db, {
-        userId: booking.maid_id,
-        type: "booking_completed",
-        title: "🎉 Job Marked Complete",
-        body: `Booking with ${booking.customer_name} is complete. Funds are in escrow until the customer releases them.`,
-        data: { booking_id: id },
-        action_url: `/bookings/${id}`,
-      });
+      if (booking.maid_user_id) {
+        await notify(req.db, {
+          userId: booking.maid_user_id,
+          type: "booking_completed",
+          title: "🎉 Job Marked Complete",
+          body: `Booking with ${booking.customer_name} is complete. Funds are in escrow until the customer releases them.`,
+          data: { booking_id: id },
+          action_url: `/bookings/${id}`,
+        });
+      }
     }
 
     return res.json({
@@ -1456,15 +1486,16 @@ export const updateBookingStatus = async (req, res) => {
 
 export const releaseEscrow = async (req, res) => {
   try {
-    // Verify booking belongs to customer and is awaiting release
     const { rows } = await req.db.query(
       `SELECT b.*,
-              m.name AS maid_name, m.email AS maid_email,
+              COALESCE(mp.full_name, u.name) AS maid_name,
+              COALESCE(mp.email, u.email) AS maid_email,
               mp.currency AS maid_currency,
+              mp.user_id AS maid_user_id,
               p.currency  AS payment_currency
        FROM bookings b
-       JOIN users m ON m.id = b.maid_id
-       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users u ON u.id = mp.user_id
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
        WHERE b.id = $1
          AND b.customer_id = $2
@@ -1481,9 +1512,8 @@ export const releaseEscrow = async (req, res) => {
 
     const booking = rows[0];
     const currency = booking.payment_currency || booking.maid_currency || "NGN";
-    const maidPayout = Number(booking.total_amount); // maid gets 100% — fee charged on withdrawal
+    const maidPayout = Number(booking.total_amount);
 
-    // Mark as released
     await req.db.query(
       `UPDATE bookings
        SET escrow_status      = 'released',
@@ -1494,30 +1524,29 @@ export const releaseEscrow = async (req, res) => {
       [booking.id, req.user.id],
     );
 
-    // Credit maid wallet
     try {
       const { releaseEscrowToWallet } = await import("./wallet.controller.js");
       await releaseEscrowToWallet(req.db, {
-        maidId: booking.maid_id,
+        maidId: booking.maid_user_id,
         currency,
         amount: maidPayout,
         bookingId: booking.id,
       });
     } catch (walletErr) {
       console.error("[releaseEscrow] wallet credit failed:", walletErr.message);
-      // Don't fail the response — escrow is marked released; wallet team can retry
     }
 
-    // Notify maid
-    await notify(req.db, {
-      userId: booking.maid_id,
-      type: "payment_received",
-      title: "💰 Funds Released!",
-      body: `Customer released your payment for the completed booking. Check your wallet.`,
-      data: { booking_id: booking.id },
-      action_url: `/bookings/${booking.id}`,
-      priority: "high",
-    });
+    if (booking.maid_user_id) {
+      await notify(req.db, {
+        userId: booking.maid_user_id,
+        type: "payment_received",
+        title: "💰 Funds Released!",
+        body: `Customer released your payment for the completed booking. Check your wallet.`,
+        data: { booking_id: booking.id },
+        action_url: `/bookings/${booking.id}`,
+        priority: "high",
+      });
+    }
 
     return res.json({
       message: "Funds released to maid successfully",
@@ -1530,13 +1559,14 @@ export const releaseEscrow = async (req, res) => {
   }
 };
 
-// ─── Get maid bookings by maid ID (for customers viewing maid profile) ──
+// ─── Get maid bookings by maid ID ─────────────────────────────────────
 export const getMaidBookings = async (req, res) => {
   const { maidId } = req.params;
   const { status, limit = 100 } = req.query;
 
   try {
-    const conditions = [`b.maid_id = $1`];
+    // maidId may be a maid_profiles.id OR a users.id — handle both
+    const conditions = [`mp.id = $1 OR mp.user_id = $1`];
     const params = [maidId];
 
     if (status) {
@@ -1544,12 +1574,13 @@ export const getMaidBookings = async (req, res) => {
       conditions.push(`b.status = $${params.length}`);
     }
 
-    const where = conditions.join(" AND ");
+    const where = `(${conditions.join(") AND (")})`;
 
     const { rows } = await req.db.query(
       `SELECT b.id, b.status, b.service_date, b.duration_hours,
               b.total_amount, b.created_at
        FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
        WHERE ${where}
        ORDER BY b.created_at DESC
        LIMIT $${params.length + 1}`,
