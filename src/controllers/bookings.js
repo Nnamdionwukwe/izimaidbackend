@@ -17,6 +17,7 @@ import { notify, notifyMany, notifyAdmins } from "../utils/notify.js";
 async function fetchBookingWithUsers(db, bookingId) {
   const { rows } = await db.query(
     `SELECT b.*,
+            b.currency AS booking_currency,
             c.name as customer_name, c.email as customer_email,
             c.avatar as customer_avatar, c.phone as customer_phone,
             COALESCE(mp.full_name, u.name) as maid_name,
@@ -75,7 +76,8 @@ export const createBooking = async (req, res) => {
 
   try {
     const { rows: maidRows } = await req.db.query(
-      `SELECT mp.id as profile_id, mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
+      `SELECT mp.id as profile_id, mp.currency,
+              mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
               mp.rate_monthly, mp.rate_custom, mp.is_available,
               u.is_active, u.name AS maid_name, u.email AS maid_email
        FROM maid_profiles mp
@@ -136,11 +138,14 @@ export const createBooking = async (req, res) => {
       }
     }
 
+    // ── Freeze the maid's currency at booking time ───────────────────
+    const frozenCurrency = maid.currency || "NGN";
+
     const { rows } = await req.db.query(
       `INSERT INTO bookings
          (customer_id, maid_id, service_date, duration_hours,
-          duration_qty, address, notes, total_amount, rate_type, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'awaiting_payment')
+          duration_qty, address, notes, total_amount, rate_type, status, currency)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'awaiting_payment', $10)
        RETURNING *`,
       [
         req.user.id,
@@ -152,6 +157,7 @@ export const createBooking = async (req, res) => {
         notes || null,
         total_amount,
         rate_type,
+        frozenCurrency,
       ],
     );
 
@@ -1491,7 +1497,14 @@ export const releaseEscrow = async (req, res) => {
     }
 
     const booking = rows[0];
-    const currency = booking.payment_currency || booking.maid_currency || "NGN";
+
+    // ── Prefer frozen booking currency over live maid profile ────────
+    const currency =
+      booking.payment_currency ||
+      booking.currency ||
+      booking.maid_currency ||
+      "NGN";
+
     const maidPayout = Number(booking.total_amount);
 
     await req.db.query(
