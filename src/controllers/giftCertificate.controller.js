@@ -19,7 +19,13 @@ async function flutterwaveRequest(method, path, body) {
 }
 
 // ── Validation constants ──────────────────────────────────────────────
-const VALID_STATUSES = ["active", "redeemed", "expired", "cancelled"];
+const VALID_STATUSES = [
+  "pending",
+  "active",
+  "redeemed",
+  "expired",
+  "cancelled",
+];
 const VALID_OCCASIONS = [
   "Birthday",
   "Wedding",

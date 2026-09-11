@@ -186,8 +186,11 @@ export const verifyDonationPayment = async (req, res) => {
 
   try {
     // Find the donation
-    const donations = await FoundationDonation.findByEmail("");
-    const donation = donations.find((d) => d.payment_reference === reference);
+    const { rows } = await req.db.query(
+      `SELECT * FROM foundation_donations WHERE payment_reference = $1`,
+      [reference],
+    );
+    const donation = rows[0];
 
     if (!donation) {
       return res.status(404).json({
