@@ -1174,8 +1174,12 @@ export const submitReview = async (req, res) => {
   }
 
   try {
+    // Resolve both the maid_profiles.id AND the maid's users.id in one query
     const { rows: bookingRows } = await req.db.query(
-      `SELECT * FROM bookings WHERE id = $1 AND customer_id = $2 AND status = 'completed'`,
+      `SELECT b.*, mp.user_id AS maid_user_id
+       FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1 AND b.customer_id = $2 AND b.status = 'completed'`,
       [req.params.id, req.user.id],
     );
     if (!bookingRows.length)
@@ -1183,22 +1187,25 @@ export const submitReview = async (req, res) => {
 
     const booking = bookingRows[0];
 
+    // reviews.maid_id has FK to users(id) → store the maid's user_id
     const { rows } = await req.db.query(
       `INSERT INTO reviews (booking_id, customer_id, maid_id, rating, comment)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (booking_id) DO NOTHING RETURNING *`,
-      [booking.id, req.user.id, booking.maid_id, rating, comment || null],
+      [booking.id, req.user.id, booking.maid_user_id, rating, comment || null],
     );
 
     if (!rows.length)
       return res.status(409).json({ error: "review already submitted" });
 
+    // Update maid_profiles stats — reviews.maid_id holds user_id now,
+    // so match against mp.user_id
     await req.db.query(
       `UPDATE maid_profiles SET
          rating = (SELECT AVG(rating) FROM reviews WHERE maid_id = $1),
          total_reviews = (SELECT COUNT(*) FROM reviews WHERE maid_id = $1)
-       WHERE id = $1`,
-      [booking.maid_id],
+       WHERE user_id = $1`,
+      [booking.maid_user_id],
     );
 
     const { rows: maidRows } = await req.db.query(
@@ -1210,15 +1217,9 @@ export const submitReview = async (req, res) => {
     );
     const maid = maidRows[0];
 
-    const { rows: maidUserRows } = await req.db.query(
-      `SELECT user_id FROM maid_profiles WHERE id = $1`,
-      [booking.maid_id],
-    );
-    const maidUserId = maidUserRows[0]?.user_id;
-
-    if (maidUserId) {
+    if (booking.maid_user_id) {
       await notify(req.db, {
-        userId: maidUserId,
+        userId: booking.maid_user_id,
         type: "review_received",
         title: "⭐ New Review",
         body: `You received a ${rating}-star review from ${req.user.name || "a customer"}.`,
@@ -1241,7 +1242,6 @@ export const submitReview = async (req, res) => {
     return res.status(500).json({ error: "internal server error" });
   }
 };
-
 // ── Update booking status ─────────────────────────────────────────────
 export const updateBookingStatus = async (req, res) => {
   const { id } = req.params;
