@@ -1019,13 +1019,17 @@ export const listPendingPayments = async (req, res) => {
 export const getPayment = async (req, res) => {
   try {
     const { rows } = await req.db.query(
-      `SELECT p.* FROM payments p JOIN bookings b ON b.id=p.booking_id
-       WHERE p.booking_id=$1 AND (b.customer_id=$2 OR b.maid_id=$2 OR $3='admin')`,
+      `SELECT p.* FROM payments p
+       JOIN bookings b ON b.id = p.booking_id
+       LEFT JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE p.booking_id = $1
+         AND (b.customer_id = $2 OR mp.user_id = $2 OR $3 = 'admin')`,
       [req.params.booking_id, req.user.id, req.user.role],
     );
-    if (!rows.length)
-      return res.status(404).json({ error: "payment not found" });
-    return res.json({ payment: rows[0] });
+    // Return 200 with null payment when no row exists yet. The frontend
+    // polls this endpoint before the payment is created; a 404 would log
+    // an error on every poll.
+    return res.json({ payment: rows[0] || null });
   } catch (err) {
     console.error("[payments/getPayment]", err);
     return res.status(500).json({ error: "internal server error" });
