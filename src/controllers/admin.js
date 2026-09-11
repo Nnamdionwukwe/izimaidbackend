@@ -49,8 +49,8 @@ export const getStats = async (req, res) => {
     const [
       users,
       bookings,
-      revenue, // ← now grouped by currency
-      withdrawals, // ← now grouped by currency + status
+      revenue,
+      withdrawals,
       pendingPayments,
       activeSOS,
       pendingDocs,
@@ -127,7 +127,8 @@ export const getStats = async (req, res) => {
           (
             SELECT COUNT(*)
             FROM bookings b
-            WHERE b.maid_id = u.id AND b.status = 'completed'
+            JOIN maid_profiles mp2 ON mp2.id = b.maid_id
+            WHERE mp2.user_id = u.id AND b.status = 'completed'
           ) AS completed_bookings
         FROM users u
         JOIN maid_profiles mp ON mp.user_id = u.id
@@ -153,8 +154,8 @@ export const getStats = async (req, res) => {
       bookings: Object.fromEntries(
         bookings.rows.map((r) => [r.status, Number(r.count)]),
       ),
-      revenue: revenue.rows, // array of { currency, total_gross, ... }
-      withdrawals: withdrawals.rows, // array of { currency, status, count, total }
+      revenue: revenue.rows,
+      withdrawals: withdrawals.rows,
       pending_approvals: Number(pendingPayments.rows[0].count),
       active_sos: Number(activeSOS.rows[0].count),
       pending_docs: Number(pendingDocs.rows[0].count),
@@ -689,7 +690,7 @@ export const listBookings = async (req, res) => {
   }
   if (maid_id) {
     params.push(maid_id);
-    conditions.push(`b.maid_id = $${params.length}`);
+    conditions.push(`mp.user_id = $${params.length}`);
   }
   if (customer_id) {
     params.push(customer_id);
@@ -706,7 +707,7 @@ export const listBookings = async (req, res) => {
   if (search) {
     params.push(`%${search}%`);
     conditions.push(
-      `(c.name ILIKE $${params.length} OR m.name ILIKE $${params.length} OR b.address ILIKE $${params.length})`,
+      `(c.name ILIKE $${params.length} OR COALESCE(mp.full_name, m.name) ILIKE $${params.length} OR b.address ILIKE $${params.length})`,
     );
   }
 
@@ -718,14 +719,17 @@ export const listBookings = async (req, res) => {
       `SELECT b.*,
               c.name as customer_name, c.email as customer_email,
               c.avatar as customer_avatar, c.phone as customer_phone,
-              m.name as maid_name, m.email as maid_email,
-              m.avatar as maid_avatar,
+              COALESCE(mp.full_name, m.name) as maid_name,
+              COALESCE(mp.email, m.email) as maid_email,
+              COALESCE(mp.avatar_url, m.avatar) as maid_avatar,
+              mp.user_id as maid_user_id,
               p.status as payment_status, p.gateway, p.amount as payment_amount,
               p.platform_fee, p.maid_payout, p.paid_at,
               (SELECT COUNT(*) FROM sos_alerts WHERE booking_id = b.id AND status = 'active') as active_sos
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        LEFT JOIN payments p ON p.booking_id = b.id
        ${where}
        ORDER BY b.created_at DESC
@@ -736,7 +740,8 @@ export const listBookings = async (req, res) => {
     const { rows: countRows } = await req.db.query(
       `SELECT COUNT(*) FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        ${where}`,
       params.slice(0, -2),
     );
@@ -758,13 +763,17 @@ export const getBooking = async (req, res) => {
     const { rows } = await req.db.query(
       `SELECT b.*,
               c.name as customer_name, c.email as customer_email, c.phone as customer_phone,
-              m.name as maid_name, m.email as maid_email, m.phone as maid_phone,
+              COALESCE(mp.full_name, m.name) as maid_name,
+              COALESCE(mp.email, m.email) as maid_email,
+              COALESCE(mp.phone, m.phone) as maid_phone,
+              mp.user_id as maid_user_id,
               p.status as payment_status, p.gateway, p.amount as payment_amount,
               p.platform_fee, p.maid_payout, p.paid_at, p.paystack_reference,
               p.stripe_payment_id, p.bank_transfer_ref
        FROM bookings b
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        LEFT JOIN payments p ON p.booking_id = b.id
        WHERE b.id = $1`,
       [req.params.id],
@@ -846,10 +855,11 @@ export const adminUpdateBookingStatus = async (req, res) => {
       req,
     );
 
-    // Notify both parties
+    // Notify both parties — resolve maid_id → users.id
     const { rows: parties } = await req.db.query(
       `SELECT u.id, u.name, u.email FROM users u
-       WHERE u.id = $1 OR u.id = $2`,
+       WHERE u.id = $1
+          OR u.id = (SELECT user_id FROM maid_profiles WHERE id = $2)`,
       [before[0].customer_id, before[0].maid_id],
     );
 
@@ -981,13 +991,15 @@ export const getSOSAlerts = async (req, res) => {
               u.name as triggered_by_name, u.role as triggered_by_role,
               b.service_date, b.address as booking_address, b.status as booking_status,
               c.name as customer_name, c.phone as customer_phone,
-              m.name as maid_name,     m.phone as maid_phone,
+              COALESCE(mp.full_name, m.name) as maid_name,
+              COALESCE(mp.phone, m.phone) as maid_phone,
               ru.name as resolved_by_name
        FROM sos_alerts sa
        JOIN users u ON u.id = sa.triggered_by
        JOIN bookings b ON b.id = sa.booking_id
        JOIN users c ON c.id = b.customer_id
-       JOIN users m ON m.id = b.maid_id
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       LEFT JOIN users m ON m.id = mp.user_id
        LEFT JOIN users ru ON ru.id = sa.resolved_by
        WHERE sa.status = $1
        ORDER BY sa.created_at DESC
@@ -1023,14 +1035,18 @@ export const resolveSOSAlert = async (req, res) => {
         .json({ error: "alert not found or already resolved" });
     }
 
-    // Notify both parties
+    // Notify both parties — resolve maid_id to users.id
     const { rows: bookingRows } = await req.db.query(
-      `SELECT customer_id, maid_id FROM bookings WHERE id = $1`,
+      `SELECT b.customer_id, mp.user_id AS maid_user_id
+       FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
+       WHERE b.id = $1`,
       [rows[0].booking_id],
     );
     if (bookingRows.length) {
-      const { customer_id, maid_id } = bookingRows[0];
-      for (const userId of [customer_id, maid_id]) {
+      const { customer_id, maid_user_id } = bookingRows[0];
+      for (const userId of [customer_id, maid_user_id]) {
+        if (!userId) continue;
         await notify(req.db, {
           userId,
           type: "sos_resolved",
@@ -1255,7 +1271,9 @@ export const listMaids = async (req, res) => {
               mp.currency, mp.rate_hourly, mp.rate_daily,
               mp.rate_weekly, mp.rate_monthly, mp.rate_custom, mp.pricing_note,
               mw.available as wallet_balance, mw.total_earned,
-              (SELECT COUNT(*) FROM bookings WHERE maid_id = u.id AND status = 'completed') as completed_bookings,
+              (SELECT COUNT(*) FROM bookings b2
+                JOIN maid_profiles mp2 ON mp2.id = b2.maid_id
+                WHERE mp2.user_id = u.id AND b2.status = 'completed') as completed_bookings,
               (SELECT COUNT(*) FROM maid_documents WHERE maid_id = u.id AND status = 'pending') as pending_docs
        FROM users u
        JOIN maid_profiles mp ON mp.user_id = u.id
