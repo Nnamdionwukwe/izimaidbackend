@@ -400,6 +400,14 @@ export const redeemCertificate = async (req, res) => {
       });
     }
 
+    // ── Status guards ──────────────────────────────────────────────
+    if (certificate.status === "pending") {
+      return res.status(400).json({
+        success: false,
+        error: "This gift certificate has not been paid for yet",
+      });
+    }
+
     if (certificate.status === "redeemed") {
       return res.status(400).json({
         success: false,
@@ -421,6 +429,7 @@ export const redeemCertificate = async (req, res) => {
       });
     }
 
+    // ── Expiry check ───────────────────────────────────────────────
     if (new Date(certificate.expires_at) < new Date()) {
       await GiftCertificate.updateStatus(
         certificate.id,
@@ -433,11 +442,24 @@ export const redeemCertificate = async (req, res) => {
       });
     }
 
+    // ── Redeem ─────────────────────────────────────────────────────
+    // GiftCertificate.redeemCertificate() has WHERE status = 'active',
+    // so it returns null if the row was concurrently redeemed or
+    // cancelled between the SELECT above and this UPDATE.
     const redeemed = await GiftCertificate.redeemCertificate(
       code,
       req.user?.id || null,
       null,
     );
+
+    if (!redeemed) {
+      // Lost a race — someone else redeemed it, or status changed.
+      return res.status(409).json({
+        success: false,
+        error:
+          "This gift certificate is no longer available for redemption. It may have been redeemed or cancelled.",
+      });
+    }
 
     return res.json({
       success: true,
@@ -449,6 +471,7 @@ export const redeemCertificate = async (req, res) => {
         to: redeemed.recipient_name,
         email: redeemed.recipient_email,
         phone: redeemed.recipient_phone,
+        redeemedAt: redeemed.redeemed_at,
         expiresAt: redeemed.expires_at,
       },
     });
