@@ -10,7 +10,8 @@ export const getEarnings = async (req, res) => {
   } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
 
-  const conditions = ["b.maid_id = $1"];
+  // bookings.maid_id = maid_profiles.id → filter via mp.user_id
+  const conditions = ["mp.user_id = $1"];
   const params = [req.user.id];
 
   if (status !== "all") {
@@ -18,7 +19,6 @@ export const getEarnings = async (req, res) => {
     conditions.push(`b.status = $${params.length}`);
   }
 
-  // Filter by currency if requested
   if (currency) {
     params.push(currency.toUpperCase());
     conditions.push(
@@ -34,18 +34,16 @@ export const getEarnings = async (req, res) => {
       all: "",
     }[period] || "";
 
-  // Base JOIN needed for currency detection
   const baseJoin = `
     FROM bookings b
     JOIN users u ON u.id = b.customer_id
+    JOIN maid_profiles mp ON mp.id = b.maid_id
     LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-    LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
   `;
 
   const where = `WHERE ${conditions.join(" AND ")} ${periodClause}`;
 
   try {
-    // ── Paginated bookings ──────────────────────────────────────────
     const { rows: bookings } = await req.db.query(
       `SELECT
          b.id,
@@ -65,7 +63,6 @@ export const getEarnings = async (req, res) => {
       [...params, Number(limit), offset],
     );
 
-    // ── Summary per currency ────────────────────────────────────────
     const { rows: summaryRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, mp.currency, 'NGN')  AS currency,
@@ -76,9 +73,9 @@ export const getEarnings = async (req, res) => {
          COALESCE(MAX(b.total_amount),   0)         AS highest_booking,
          COALESCE(MIN(b.total_amount),   0)         AS lowest_booking
        FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-       WHERE b.maid_id = $1
+       WHERE mp.user_id = $1
          AND b.status  = 'completed'
          ${periodClause}
        GROUP BY COALESCE(p.currency, mp.currency, 'NGN')
@@ -86,7 +83,6 @@ export const getEarnings = async (req, res) => {
       [req.user.id],
     );
 
-    // ── Monthly chart per currency (last 6 months) ─────────────────
     const { rows: monthly } = await req.db.query(
       `SELECT
          to_char(date_trunc('month', b.service_date), 'Mon YY') AS month,
@@ -94,9 +90,9 @@ export const getEarnings = async (req, res) => {
          COUNT(*)                                                AS bookings,
          COALESCE(SUM(b.total_amount), 0)                       AS earned
        FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-       WHERE b.maid_id = $1
+       WHERE mp.user_id = $1
          AND b.status  = 'completed'
          AND b.service_date >= now() - interval '6 months'
          ${periodClause}
@@ -106,7 +102,6 @@ export const getEarnings = async (req, res) => {
       [req.user.id],
     );
 
-    // ── Total count for pagination ──────────────────────────────────
     const { rows: countRows } = await req.db.query(
       `SELECT COUNT(*)
        ${baseJoin}
@@ -114,7 +109,6 @@ export const getEarnings = async (req, res) => {
       params,
     );
 
-    // ── All currencies this maid has earned in ──────────────────────
     const currencies = summaryRows.map((s) => s.currency);
 
     return res.json({
@@ -145,14 +139,13 @@ export const getEarningsStats = async (req, res) => {
            WHERE b.service_date >= date_trunc('month', now())) AS this_month_bookings,
          COALESCE(SUM(b.total_amount) FILTER (
            WHERE b.service_date >= date_trunc('month', now())), 0) AS this_month_earned,
-         COUNT(*) FILTER (
-           WHERE b.service_date >= date_trunc('week', now()))  AS this_week_bookings,
+         COUNT(*) FILTER (WHERE b.service_date >= date_trunc('week', now())) AS this_week_bookings,
          COALESCE(SUM(b.total_amount) FILTER (
            WHERE b.service_date >= date_trunc('week', now())), 0) AS this_week_earned
        FROM bookings b
+       JOIN maid_profiles mp ON mp.id = b.maid_id
        LEFT JOIN payments p ON p.booking_id = b.id AND p.status = 'success'
-       LEFT JOIN maid_profiles mp ON mp.user_id = b.maid_id
-       WHERE b.maid_id = $1 AND b.status = 'completed'
+       WHERE mp.user_id = $1 AND b.status = 'completed'
        GROUP BY COALESCE(p.currency, mp.currency, 'NGN')
        ORDER BY total_earned DESC`,
       [req.user.id],
