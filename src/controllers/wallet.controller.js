@@ -19,6 +19,8 @@ async function ensureWallet(db, maidId, currency = "NGN") {
 }
 
 // GET /api/wallet  — returns ALL currency balances for the maid
+// GET /api/wallet  — returns currency balances for the maid
+// Only shows currencies with a balance OR pending escrow.
 export const getWallet = async (req, res) => {
   try {
     // ── Ensure an NGN wallet exists for this maid ────────────────
@@ -39,7 +41,7 @@ export const getWallet = async (req, res) => {
       [req.user.id],
     );
 
-    // ── Escrow pending (with frozen booking currency preference) ─
+    // ── Escrow pending ───────────────────────────────────────────
     const { rows: escrowRows } = await req.db.query(
       `SELECT
          COALESCE(p.currency, b.currency, mp.currency, 'NGN') AS currency,
@@ -70,12 +72,25 @@ export const getWallet = async (req, res) => {
       walletByCur.set((w.currency || "NGN").toUpperCase(), w);
     }
 
-    // ── Merge currencies: NGN + all wallets + all escrow currencies ──
-    const allCurrencies = new Set([
-      "NGN",
-      ...walletByCur.keys(),
-      ...Object.keys(escrowMap),
-    ]);
+    // ── Only show currencies with actual balance or escrow ───────
+    const allCurrencies = new Set();
+
+    // 1. Currencies with non-zero wallet balances
+    for (const [cur, w] of walletByCur) {
+      const hasBalance =
+        Number(w?.available_balance || 0) > 0 ||
+        Number(w?.pending_balance || 0) > 0 ||
+        Number(w?.total_earned || 0) > 0;
+      if (hasBalance) allCurrencies.add(cur);
+    }
+
+    // 2. Currencies with escrow pending
+    for (const cur of Object.keys(escrowMap)) {
+      if (Number(escrowMap[cur]) > 0) allCurrencies.add(cur);
+    }
+
+    // 3. If nothing at all — show NGN so the UI isn't blank
+    if (allCurrencies.size === 0) allCurrencies.add("NGN");
 
     const walletsWithEscrow = Array.from(allCurrencies).map((cur) => {
       const w = walletByCur.get(cur);
