@@ -765,12 +765,15 @@ export const getBooking = async (req, res) => {
   try {
     const { rows } = await req.db.query(
       `SELECT b.*,
+              b.currency AS booking_currency,
               c.name as customer_name, c.email as customer_email, c.phone as customer_phone,
               COALESCE(mp.full_name, m.name) as maid_name,
               COALESCE(mp.email, m.email) as maid_email,
               COALESCE(mp.phone, m.phone) as maid_phone,
               mp.user_id as maid_user_id,
+              mp.currency as maid_currency,
               p.status as payment_status, p.gateway, p.amount as payment_amount,
+              p.currency as payment_currency,
               p.platform_fee, p.maid_payout, p.paid_at, p.paystack_reference,
               p.stripe_payment_id, p.bank_transfer_ref
        FROM bookings b
