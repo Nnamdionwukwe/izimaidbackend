@@ -44,14 +44,13 @@ export const createBooking = async (req, res) => {
     maid_id,
     service_date,
     duration_hours,
-    duration_qty, // raw count of days/weeks/months/units
+    duration_qty,
     address,
     notes,
     rate_type = "hourly",
     total_override,
   } = req.body;
 
-  // ── Validation ──────────────────────────────────────────────────
   if (!maid_id || !service_date || !duration_hours || !address) {
     return res.status(400).json({
       error: "maid_id, service_date, duration_hours, address are required",
@@ -65,7 +64,6 @@ export const createBooking = async (req, res) => {
     });
   }
 
-  // For non‑hourly rates, duration_qty is required
   if (
     rate_type !== "hourly" &&
     (duration_qty === undefined || Number(duration_qty) <= 0)
@@ -76,7 +74,6 @@ export const createBooking = async (req, res) => {
   }
 
   try {
-    // ── Fetch maid details ──────────────────────────────────────
     const { rows: maidRows } = await req.db.query(
       `SELECT mp.id as profile_id, mp.hourly_rate, mp.rate_hourly, mp.rate_daily, mp.rate_weekly,
               mp.rate_monthly, mp.rate_custom, mp.is_available,
@@ -97,7 +94,6 @@ export const createBooking = async (req, res) => {
       return res.status(409).json({ error: "maid is not available" });
     }
 
-    // ── Calculate total ─────────────────────────────────────────
     let rate = 0;
     switch (rate_type) {
       case "hourly":
@@ -123,7 +119,6 @@ export const createBooking = async (req, res) => {
     let total_amount;
 
     if (total_override && Number(total_override) > 0) {
-      // Negotiated — exact agreed price
       total_amount = Number(total_override);
     } else {
       if (rate === 0) {
@@ -134,7 +129,6 @@ export const createBooking = async (req, res) => {
 
       const qty = Number(duration_qty || 1);
 
-      // Hourly multiplies by hours; all others multiply by the raw unit count
       if (rate_type === "hourly") {
         total_amount = rate * Number(duration_hours);
       } else {
@@ -142,7 +136,6 @@ export const createBooking = async (req, res) => {
       }
     }
 
-    // ── Insert with new columns ──────────────────────────────────
     const { rows } = await req.db.query(
       `INSERT INTO bookings
          (customer_id, maid_id, service_date, duration_hours,
@@ -151,7 +144,7 @@ export const createBooking = async (req, res) => {
        RETURNING *`,
       [
         req.user.id,
-        maidRows[0].profile_id, // Use the profile_id from maid_profiles
+        maidRows[0].profile_id,
         service_date,
         Number(duration_hours),
         Number(duration_qty || 1),
@@ -242,7 +235,7 @@ export const getBooking = async (req, res) => {
     let emergencyContacts = [];
     if (["confirmed", "in_progress"].includes(booking.status)) {
       const { rows: ec } = await req.db.query(
-        `SELECT ec.name, ec.phone, ec.email, ec.relationship
+        `SELECT ec.name, ec.phone, ec.relationship
  FROM emergency_contacts ec
  WHERE ec.user_id = $1
  ORDER BY ec.is_primary DESC`,
@@ -333,8 +326,6 @@ export const updateStatus = async (req, res) => {
       extraParams = [reason || null];
     }
 
-    // Ownership check: b.maid_id is a maid_profiles.id, so compare against
-    // the maid_profiles row that belongs to this user (if role is maid)
     const queryParams = [
       status,
       req.params.id,
@@ -367,7 +358,6 @@ export const updateStatus = async (req, res) => {
 
     const booking = rows[0];
 
-    // ── Credit maid wallet when booking completes ─────────────────
     if (status === "completed") {
       await req.db.query(
         `UPDATE bookings SET escrow_status = 'pending_release' WHERE id = $1`,
@@ -375,8 +365,6 @@ export const updateStatus = async (req, res) => {
       );
     }
 
-    // ── Fetch both users for emails ───────────────────────────────
-    // booking.maid_id is a maid_profiles.id, so resolve to users via maid_profiles
     const { rows: userRows } = await req.db.query(
       `SELECT u.id, u.name, u.email, u.role FROM users u
        WHERE u.id = $1 OR u.id = (SELECT user_id FROM maid_profiles WHERE id = $2)`,
@@ -441,7 +429,6 @@ export const checkIn = async (req, res) => {
       });
     }
 
-    // Fetch maid name for the email
     const { rows: partyRows } = await req.db.query(
       `SELECT c.name AS customer_name, c.email AS customer_email,
           COALESCE(mp.full_name, u.name) AS maid_name
@@ -602,12 +589,12 @@ export const triggerSOS = async (req, res) => {
     const booking = bookingRows[0];
 
     const { rows: customerEmergency } = await req.db.query(
-      `SELECT name, phone, email, relationship FROM emergency_contacts
+      `SELECT name, phone, relationship FROM emergency_contacts
        WHERE user_id = $1 ORDER BY is_primary DESC`,
       [booking.customer_id],
     );
     const { rows: maidEmergency } = await req.db.query(
-      `SELECT name, phone, email, relationship FROM emergency_contacts
+      `SELECT name, phone, relationship FROM emergency_contacts
        WHERE user_id = $1 ORDER BY is_primary DESC`,
       [booking.maid_user_id],
     );
@@ -622,7 +609,6 @@ export const triggerSOS = async (req, res) => {
           <td style="padding:6px 12px">${c.name}</td>
           <td style="padding:6px 12px">${c.relationship}</td>
           <td style="padding:6px 12px">${c.phone}</td>
-          <td style="padding:6px 12px">${c.email || "—"}</td>
         </tr>`,
         )
         .join("");
@@ -688,7 +674,6 @@ export const triggerSOS = async (req, res) => {
             <th style="padding:6px 12px;text-align:left">Name</th>
             <th style="padding:6px 12px;text-align:left">Relationship</th>
             <th style="padding:6px 12px;text-align:left">Phone</th>
-            <th style="padding:6px 12px;text-align:left">Email</th>
           </tr>
           ${ecHtml(customerEmergency, "customer")}
         </table>
@@ -698,7 +683,6 @@ export const triggerSOS = async (req, res) => {
             <th style="padding:6px 12px;text-align:left">Name</th>
             <th style="padding:6px 12px;text-align:left">Relationship</th>
             <th style="padding:6px 12px;text-align:left">Phone</th>
-            <th style="padding:6px 12px;text-align:left">Email</th>
           </tr>
           ${ecHtml(maidEmergency, "maid")}
         </table>
@@ -738,7 +722,6 @@ export const updateLocation = async (req, res) => {
     return res.status(400).json({ error: "lat and lng are required" });
 
   try {
-    // Verify booking is in progress and belongs to this maid
     const { rows: bookingRows } = await req.db.query(
       `SELECT b.id FROM bookings b
        JOIN maid_profiles mp ON mp.id = b.maid_id
@@ -758,7 +741,6 @@ export const updateLocation = async (req, res) => {
       [req.params.id, req.user.id, lat, lng, accuracy || null],
     );
 
-    // Prune old pings — keep only last 100 per booking
     await req.db.query(
       `DELETE FROM booking_locations
        WHERE booking_id = $1
@@ -1123,7 +1105,6 @@ export const setEmergencyContact = async (req, res) => {
     name,
     phone,
     phone_country_code = "+234",
-    email,
     relationship = "other",
     is_primary = false,
   } = req.body;
@@ -1143,9 +1124,9 @@ export const setEmergencyContact = async (req, res) => {
     }
 
     const { rows } = await req.db.query(
-      `INSERT INTO emergency_contacts (user_id, name, phone, email, relationship, is_primary)
-   VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [req.user.id, name, fullPhone, email || null, relationship, is_primary],
+      `INSERT INTO emergency_contacts (user_id, name, phone, relationship, is_primary)
+   VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [req.user.id, name, fullPhone, relationship, is_primary],
     );
 
     return res.status(201).json({ contact: rows[0] });
@@ -1212,7 +1193,6 @@ export const submitReview = async (req, res) => {
     if (!rows.length)
       return res.status(409).json({ error: "review already submitted" });
 
-    // booking.maid_id is a maid_profiles.id
     await req.db.query(
       `UPDATE maid_profiles SET
          rating = (SELECT AVG(rating) FROM reviews WHERE maid_id = $1),
@@ -1565,7 +1545,6 @@ export const getMaidBookings = async (req, res) => {
   const { status, limit = 100 } = req.query;
 
   try {
-    // maidId may be a maid_profiles.id OR a users.id — handle both
     const conditions = [`mp.id = $1 OR mp.user_id = $1`];
     const params = [maidId];
 

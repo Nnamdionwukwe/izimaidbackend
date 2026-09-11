@@ -156,8 +156,8 @@ export async function creditMaidWallet(
   await db.query(
     `
     INSERT INTO wallet_transactions
-      (maid_id, currency, type, amount, balance_after, description, reference, booking_id)
-    VALUES ($1,$2,'credit',$3,$4,$5,$6,$7)`,
+      (maid_id, currency, type, amount, balance_after, description, reference, booking_id, source, source_id)
+    VALUES ($1,$2,'credit',$3,$4,$5,$6,$7,'booking_payment',$8)`,
     [
       maidId,
       currency,
@@ -165,6 +165,7 @@ export async function creditMaidWallet(
       Number(rows[0]?.pending_balance || 0),
       description || "Booking payment",
       reference || null,
+      bookingId || null,
       bookingId || null,
     ],
   );
@@ -187,8 +188,8 @@ export async function releasePendingToAvailable(db, maidId, currency, amount) {
   await db.query(
     `
     INSERT INTO wallet_transactions
-      (maid_id, currency, type, amount, balance_after, description)
-    VALUES ($1,$2,'release',$3,$4,'Funds released to available balance')`,
+      (maid_id, currency, type, amount, balance_after, description, source)
+    VALUES ($1,$2,'release',$3,$4,'Funds released to available balance','pending_release')`,
     [maidId, currency, amount, Number(rows[0]?.available_balance || 0)],
   );
 }
@@ -216,20 +217,21 @@ export async function deductWalletBalance(
   await db.query(
     `
     INSERT INTO wallet_transactions
-      (maid_id, currency, type, amount, balance_after, description, withdrawal_id)
-    VALUES ($1,$2,'debit',$3,$4,'Withdrawal',$5)`,
+      (maid_id, currency, type, amount, balance_after, description, withdrawal_id, source, source_id)
+    VALUES ($1,$2,'debit',$3,$4,'Withdrawal',$5,'withdrawal',$6)`,
     [
       maidId,
       currency,
       amount,
       Number(rows[0]?.available_balance || 0),
       withdrawalId || null,
+      withdrawalId || null,
     ],
   );
 }
 
 // ══════════════════════════════════════════════════════════════════════
-//  ADMIN WALLET FUNCTIONS — add these to wallet.controller.js
+//  ADMIN WALLET FUNCTIONS
 // ══════════════════════════════════════════════════════════════════════
 
 // GET /api/wallet/admin  — list all maids' wallets with totals
@@ -278,7 +280,6 @@ export const adminListWallets = async (req, res) => {
       params.slice(0, -2),
     );
 
-    // Platform totals per currency
     const { rows: totals } = await req.db.query(
       `SELECT
          currency,
@@ -305,7 +306,7 @@ export const adminListWallets = async (req, res) => {
   }
 };
 
-// GET /api/wallet/admin/:maidId  — get all wallets + history for one maid
+// GET /api/wallet/admin/:maidId
 export const adminGetMaidWallet = async (req, res) => {
   const { maidId } = req.params;
   const { page = 1, limit = 30 } = req.query;
@@ -348,7 +349,7 @@ export const adminGetMaidWallet = async (req, res) => {
   }
 };
 
-// POST /api/wallet/admin/:maidId/credit  — manually credit a maid's wallet
+// POST /api/wallet/admin/:maidId/credit
 export const adminCreditWallet = async (req, res) => {
   const { maidId } = req.params;
   const { currency = "NGN", amount, description, reference } = req.body;
@@ -358,7 +359,6 @@ export const adminCreditWallet = async (req, res) => {
   }
 
   try {
-    // Verify maid exists
     const { rows: maidRows } = await req.db.query(
       `SELECT id, name FROM users WHERE id = $1 AND role = 'maid'`,
       [maidId],
@@ -370,7 +370,6 @@ export const adminCreditWallet = async (req, res) => {
     const cur = currency.toUpperCase();
     const amt = Number(amount);
 
-    // Upsert wallet then credit available_balance directly
     await req.db.query(
       `INSERT INTO maid_wallets
          (maid_id, currency, available_balance, pending_balance, total_earned, total_withdrawn)
@@ -382,7 +381,6 @@ export const adminCreditWallet = async (req, res) => {
       [maidId, cur, amt],
     );
 
-    // Log transaction
     const { rows: walletRows } = await req.db.query(
       `SELECT available_balance FROM maid_wallets WHERE maid_id = $1 AND currency = $2`,
       [maidId, cur],
@@ -390,8 +388,8 @@ export const adminCreditWallet = async (req, res) => {
 
     await req.db.query(
       `INSERT INTO wallet_transactions
-         (maid_id, currency, type, amount, balance_after, description, reference)
-       VALUES ($1, $2, 'credit', $3, $4, $5, $6)`,
+         (maid_id, currency, type, amount, balance_after, description, reference, source)
+       VALUES ($1, $2, 'credit', $3, $4, $5, $6, 'admin_credit')`,
       [
         maidId,
         cur,
@@ -412,7 +410,7 @@ export const adminCreditWallet = async (req, res) => {
   }
 };
 
-// POST /api/wallet/admin/:maidId/release  — release pending → available
+// POST /api/wallet/admin/:maidId/release
 export const adminReleaseWallet = async (req, res) => {
   const { maidId } = req.params;
   const { currency = "NGN", amount } = req.body;
@@ -441,8 +439,8 @@ export const adminReleaseWallet = async (req, res) => {
 
     await req.db.query(
       `INSERT INTO wallet_transactions
-         (maid_id, currency, type, amount, balance_after, description)
-       VALUES ($1, $2, 'release', $3, $4, $5)`,
+         (maid_id, currency, type, amount, balance_after, description, source)
+       VALUES ($1, $2, 'release', $3, $4, $5, 'admin_release')`,
       [
         maidId,
         cur,
@@ -462,7 +460,7 @@ export const adminReleaseWallet = async (req, res) => {
   }
 };
 
-// POST /api/wallet/admin/:maidId/adjust  — manual debit / correction
+// POST /api/wallet/admin/:maidId/adjust
 export const adminAdjustWallet = async (req, res) => {
   const { maidId } = req.params;
   const { currency = "NGN", amount, type = "debit", description } = req.body;
@@ -499,8 +497,8 @@ export const adminAdjustWallet = async (req, res) => {
 
     await req.db.query(
       `INSERT INTO wallet_transactions
-         (maid_id, currency, type, amount, balance_after, description)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+         (maid_id, currency, type, amount, balance_after, description, source)
+       VALUES ($1, $2, $3, $4, $5, $6, 'admin_adjustment')`,
       [
         maidId,
         cur,
@@ -521,7 +519,7 @@ export const adminAdjustWallet = async (req, res) => {
   }
 };
 
-// Add this new export after creditMaidWallet:
+// Release escrow to maid wallet
 export async function releaseEscrowToWallet(
   db,
   { maidId, currency, amount, bookingId },
@@ -541,14 +539,15 @@ export async function releaseEscrowToWallet(
 
   await db.query(
     `INSERT INTO wallet_transactions
-       (maid_id, currency, type, amount, balance_after, description, booking_id)
-     VALUES ($1, $2, 'credit', $3, $4, $5, $6)`,
+       (maid_id, currency, type, amount, balance_after, description, booking_id, source, source_id)
+     VALUES ($1, $2, 'credit', $3, $4, $5, $6, 'escrow_release', $7)`,
     [
       maidId,
       currency,
       amount,
       Number(rows[0]?.available_balance || 0),
       "Escrow released by customer — available for withdrawal",
+      bookingId || null,
       bookingId || null,
     ],
   );
