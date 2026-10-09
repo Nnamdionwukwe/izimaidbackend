@@ -316,16 +316,26 @@ export const initializePayment = async (req, res) => {
       },
     };
 
+    // ── Diagnostics ─────────────────────────────────────────────────
+    console.log("[FLW] Secret key prefix:", FLW_SECRET_KEY?.slice(0, 15));
+    console.log("[FLW] Client URL:", process.env.CLIENT_URL);
+    console.log("[FLW] Logo URL:", process.env.LOGO_URL);
+    console.log("[FLW] Payload sent:", JSON.stringify(payload, null, 2));
+
     const flutterwaveRes = await flutterwaveRequest(
       "POST",
       "/payments",
       payload,
     );
 
+    console.log("[FLW] Response:", JSON.stringify(flutterwaveRes, null, 2));
+
     if (flutterwaveRes.status !== "success") {
-      return res.status(502).json({
+      return res.status(400).json({
         error: "Flutterwave initialization failed",
         details: flutterwaveRes.message,
+        flw_status: flutterwaveRes.status,
+        flw_data: flutterwaveRes.data,
       });
     }
 
